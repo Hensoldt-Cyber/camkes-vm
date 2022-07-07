@@ -152,10 +152,8 @@ function(DefineCAmkESVMFileServer)
         list(APPEND CPIO_FILES "${CPIO_FILE}")
     endforeach()
 
-    # Build CPIO archive. Unfortunately MakeCPIO() expect a plain file name an
-    # can't take a path, so we can create the archive in BIN_DIR to keep the
-    # root folder clean.
-    set(CPIO_ARCHIVE "${PARAM_INSTANCE}_cpio_archive.o")
+    # Build CPIO archive.
+    set(CPIO_ARCHIVE "${INST_BIN_DIR}/cpio_archive.o")
     include(cpio)
     MakeCPIO(${CPIO_ARCHIVE} "${CPIO_FILES}" DEPENDS "${deps}")
 
