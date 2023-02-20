@@ -1378,7 +1378,7 @@ static int main_continued(void)
         }
     }
 
-    return 0;
+    UNREACHABLE();
 }
 
 /* base_prio and num_vcpus are optional attributes of the VM component. */
