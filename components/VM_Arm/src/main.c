@@ -397,6 +397,12 @@ static int camkes_vm_utspace_alloc_at(void *data, const cspacepath_t *dest, seL4
 
 }
 
+static bool is_paddr_in_vm_ram(unsigned long paddr)
+{
+    unsigned long ram_paddr_end = ram_paddr_base + (ram_size - 1);
+    return (paddr >= ram_paddr_base) && (paddr <= ram_paddr_end);
+}
+
 static int vmm_init(void)
 {
     vka_object_t fault_ep_obj;
@@ -447,8 +453,7 @@ static int vmm_init(void)
         cspacepath_t path;
         vka_cspace_make_path(vka, cap, &path);
         int utType = device ? ALLOCMAN_UT_DEV : ALLOCMAN_UT_KERNEL;
-        if (utType == ALLOCMAN_UT_DEV &&
-            paddr >= ram_paddr_base && paddr <= (ram_paddr_base + (ram_size - 1))) {
+        if (utType == ALLOCMAN_UT_DEV && is_paddr_in_vm_ram(paddr)) {
             utType = ALLOCMAN_UT_DEV_MEM;
         }
         err = allocman_utspace_add_uts(allocman, 1, &path, &size, &paddr, utType);
@@ -463,8 +468,7 @@ static int vmm_init(void)
             cspacepath_t path;
             vka_cspace_make_path(vka, cap, &path);
             int utType = ALLOCMAN_UT_DEV;
-            if (paddr >= ram_paddr_base &&
-                paddr <= (ram_paddr_base + (ram_size - 1))) {
+            if (is_paddr_in_vm_ram(paddr)) {
                 utType = ALLOCMAN_UT_DEV_MEM;
             }
             err = allocman_utspace_add_uts(allocman, 1, &path, &size, &paddr, utType);
