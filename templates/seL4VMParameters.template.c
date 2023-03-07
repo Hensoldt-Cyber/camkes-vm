@@ -12,6 +12,11 @@
 /*- set linux_address_config = configuration[me.name].get('linux_address_config') -*/
 /*- set linux_image_config = configuration[me.name].get('linux_image_config') -*/
 
+/*# For legacy compatibility, a fall back to the standard Linux entry exists. #*/
+/*- set is_64_bit = (8 == macros.get_word_size(options.architecture)) -*/
+/*- set entry_offset = 0x80000 if is_64_bit else 0x8000 -*/
+/*- set entry_offset_hex_str = '0x%x' % entry_offset -*/
+
 /*- if vm_address_config -*/
 
 const unsigned long ram_base = /*? vm_address_config.get('ram_base') ?*/;
@@ -23,15 +28,8 @@ const unsigned long initrd_addr = /*? vm_address_config.get('initrd_addr') ?*/;
 /*- if vm_address_config.get('kernel_entry_addr') != '-1' -*/
 const unsigned long entry_addr = /*? vm_address_config.get('kernel_entry_addr') ?*/;
 /*- else -*/
-
-#warning Entry address has been calculated. Please use vm_address_config.kernel_entry_addr
-
-#ifdef CONFIG_ARCH_AARCH64
-const unsigned long entry_addr = /*? vm_address_config.get('ram_base') ?*/ + 0x80000;
-#else
-const unsigned long entry_addr = /*? vm_address_config.get('ram_base') ?*/ + 0x8000;
-#endif
-
+#warning Using standard Linux entry point, please consider setting kernel_entry_addr explicitly.
+const unsigned long entry_addr = ram_base + /*? entry_offset_hex_str ?*/;
 /*- endif -*/
 
 /*- else -*/
@@ -45,12 +43,8 @@ const unsigned long ram_offset = /*? linux_address_config.get('linux_ram_offset'
 const unsigned long dtb_addr = /*? linux_address_config.get('dtb_addr') ?*/;
 const unsigned long initrd_max_size = /*? linux_address_config.get('initrd_max_size') ?*/;
 const unsigned long initrd_addr = /*? linux_address_config.get('initrd_addr') ?*/;
-
-#ifdef CONFIG_ARCH_AARCH64
-const unsigned long entry_addr = /*? linux_address_config.get('linux_ram_base') ?*/ + 0x80000;
-#else
-const unsigned long entry_addr = /*? linux_address_config.get('linux_ram_base') ?*/ + 0x8000;
-#endif
+/* Use standard Linux entry point. */
+const unsigned long entry_addr = ram_base + /*? entry_offset_hex_str ?*/;
 
 /*- endif -*/
 
