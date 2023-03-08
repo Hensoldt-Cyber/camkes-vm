@@ -14,22 +14,22 @@
 
 /*- if vm_address_config -*/
 
-const unsigned long ram_base = /*? vm_address_config.get('ram_base') ?*/;
-const unsigned long ram_paddr_base = /*? vm_address_config.get('ram_paddr_base') ?*/;
-const unsigned long ram_size = /*? vm_address_config.get('ram_size') ?*/;
-const unsigned long dtb_addr = /*? vm_address_config.get('dtb_addr') ?*/;
-const unsigned long initrd_addr = /*? vm_address_config.get('initrd_addr') ?*/;
+const uintptr_t ram_base = /*? vm_address_config.get('ram_base') ?*/;
+const uintptr_t ram_paddr_base = /*? vm_address_config.get('ram_paddr_base') ?*/;
+const size_t ram_size = /*? vm_address_config.get('ram_size') ?*/;
+const uintptr_t dtb_addr = /*? vm_address_config.get('dtb_addr') ?*/;
+const uintptr_t initrd_addr = /*? vm_address_config.get('initrd_addr') ?*/;
 
 /*- if vm_address_config.get('kernel_entry_addr') != '-1' -*/
-const unsigned long entry_addr = /*? vm_address_config.get('kernel_entry_addr') ?*/;
+const uintptr_t entry_addr = /*? vm_address_config.get('kernel_entry_addr') ?*/;
 /*- else -*/
 
 #warning Entry address has been calculated. Please use vm_address_config.kernel_entry_addr
 
 #ifdef CONFIG_ARCH_AARCH64
-const unsigned long entry_addr = /*? vm_address_config.get('ram_base') ?*/ + 0x80000;
+const uintptr_t entry_addr = /*? vm_address_config.get('ram_base') ?*/ + 0x80000;
 #else
-const unsigned long entry_addr = /*? vm_address_config.get('ram_base') ?*/ + 0x8000;
+const uintptr_t entry_addr = /*? vm_address_config.get('ram_base') ?*/ + 0x8000;
 #endif
 
 /*- endif -*/
@@ -38,18 +38,18 @@ const unsigned long entry_addr = /*? vm_address_config.get('ram_base') ?*/ + 0x8
 
 #warning You are using the deprecated linux_address_config structure. Please use the vm_address_config structure instead
 
-const unsigned long ram_base = /*? linux_address_config.get('linux_ram_base') ?*/;
-const unsigned long ram_paddr_base = /*? linux_address_config.get('linux_ram_paddr_base') ?*/;
-const unsigned long ram_size = /*? linux_address_config.get('linux_ram_size') ?*/;
-const unsigned long ram_offset = /*? linux_address_config.get('linux_ram_offset') ?*/;
-const unsigned long dtb_addr = /*? linux_address_config.get('dtb_addr') ?*/;
-const unsigned long initrd_max_size = /*? linux_address_config.get('initrd_max_size') ?*/;
-const unsigned long initrd_addr = /*? linux_address_config.get('initrd_addr') ?*/;
+const uintptr_t ram_base = /*? linux_address_config.get('linux_ram_base') ?*/;
+const uintptr_t ram_paddr_base = /*? linux_address_config.get('linux_ram_paddr_base') ?*/;
+const size_t ram_size = /*? linux_address_config.get('linux_ram_size') ?*/;
+const size_t ram_offset = /*? linux_address_config.get('linux_ram_offset') ?*/;
+const uintptr_t dtb_addr = /*? linux_address_config.get('dtb_addr') ?*/;
+const uintptr_t initrd_max_size = /*? linux_address_config.get('initrd_max_size') ?*/;
+const uintptr_t initrd_addr = /*? linux_address_config.get('initrd_addr') ?*/;
 
 #ifdef CONFIG_ARCH_AARCH64
-const unsigned long entry_addr = /*? linux_address_config.get('linux_ram_base') ?*/ + 0x80000;
+const uintptr_t entry_addr = /*? linux_address_config.get('linux_ram_base') ?*/ + 0x80000;
 #else
-const unsigned long entry_addr = /*? linux_address_config.get('linux_ram_base') ?*/ + 0x8000;
+const uintptr_t entry_addr = /*? linux_address_config.get('linux_ram_base') ?*/ + 0x8000;
 #endif
 
 /*- endif -*/

@@ -6,17 +6,20 @@
 
 #pragma once
 
-extern const unsigned long ram_base;
-extern const unsigned long ram_paddr_base;
-extern const unsigned long ram_size;
-extern const unsigned long dtb_addr;
+#include <stdint.h>
+#include <stddef.h>
 
-extern const unsigned long initrd_addr;
-extern const unsigned long entry_addr;
+extern const uintptr_t ram_base;
+extern const uintptr_t ram_paddr_base;
+extern const size_t ram_size;
+extern const uintptr_t dtb_addr;
+
+extern const uintptr_t initrd_addr;
+extern const uintptr_t entry_addr;
 
 /*- if not configuration[me.name].get('vm_address_config') -*/
-extern const unsigned long initrd_max_size;
-extern const unsigned long ram_offset;
+extern const uintptr_t initrd_max_size;
+extern const uintptr_t ram_offset;
 /*- endif -*/
 
 extern const int provide_initrd;
