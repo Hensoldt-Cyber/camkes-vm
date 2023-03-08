@@ -25,9 +25,9 @@ extern const int provide_dtb;
 extern const int map_one_to_one;
 extern const int clean_cache;
 
-extern const char *_kernel_name;
-extern const char *_dtb_name;
-extern const char *_initrd_name;
-extern const char *kernel_bootcmdline;
-extern const char *kernel_stdout;
-extern const char *dtb_base_name;
+extern const char *const _kernel_name;
+extern const char *const _dtb_name;
+extern const char *const _initrd_name;
+extern const char *const  kernel_bootcmdline;
+extern const char *const  kernel_stdout;
+extern const char *const dtb_base_name;

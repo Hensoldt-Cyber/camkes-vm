@@ -56,12 +56,12 @@ const unsigned long entry_addr = /*? linux_address_config.get('linux_ram_base') 
 
 /*- if vm_image_config -*/
 
-const char *_kernel_name = "/*? vm_image_config.get('kernel_name') ?*/";
-const char *_dtb_name = "/*? vm_image_config.get('dtb_name', "") ?*/";
-const char *_initrd_name = "/*? vm_image_config.get('initrd_name', "") ?*/";
-const char *kernel_bootcmdline = "/*? vm_image_config.get('kernel_bootcmdline', "") ?*/";
-const char *kernel_stdout = "/*? vm_image_config.get('kernel_stdout', "") ?*/";
-const char *dtb_base_name = "/*? vm_image_config.get('dtb_base_name', "") ?*/";
+const char *const _kernel_name = "/*? vm_image_config.get('kernel_name') ?*/";
+const char *const _dtb_name = "/*? vm_image_config.get('dtb_name', "") ?*/";
+const char *const _initrd_name = "/*? vm_image_config.get('initrd_name', "") ?*/";
+const char *const kernel_bootcmdline = "/*? vm_image_config.get('kernel_bootcmdline', "") ?*/";
+const char *const kernel_stdout = "/*? vm_image_config.get('kernel_stdout', "") ?*/";
+const char *const dtb_base_name = "/*? vm_image_config.get('dtb_base_name', "") ?*/";
 
 const int provide_initrd = /*? vm_image_config.get('provide_initrd') ?*/;
 const int generate_dtb = /*? vm_image_config.get('generate_dtb') ?*/;
@@ -75,12 +75,12 @@ const int clean_cache = /*? vm_image_config.get('clean_cache') ?*/;
     map_one_to_one, and clean_cache flags are set to replicate previous behavior, which may cause your configuration to break. \
     Please use the vm_image_config structure instead."
 
-const char *_kernel_name = "/*? linux_image_config.get('linux_name') ?*/";
-const char *_dtb_name = "/*? linux_image_config.get('dtb_name') ?*/";
-const char *_initrd_name = "/*? linux_image_config.get('initrd_name') ?*/";
-const char *kernel_bootcmdline = "/*? linux_image_config.get('linux_bootcmdline') ?*/";
-const char *kernel_stdout = "/*? linux_image_config.get('linux_stdout') ?*/";
-const char *dtb_base_name = "/*? linux_image_config.get('dtb_base_name') ?*/";
+const char *const _kernel_name = "/*? linux_image_config.get('linux_name') ?*/";
+const char *const _dtb_name = "/*? linux_image_config.get('dtb_name') ?*/";
+const char *const _initrd_name = "/*? linux_image_config.get('initrd_name') ?*/";
+const char *const kernel_bootcmdline = "/*? linux_image_config.get('linux_bootcmdline') ?*/";
+const char *const kernel_stdout = "/*? linux_image_config.get('linux_stdout') ?*/";
+const char *const dtb_base_name = "/*? linux_image_config.get('dtb_base_name') ?*/";
 
 #ifdef CONFIG_VM_INITRD_FILE
 #warning VmInitRdFile is a deprecated setting. Please remove and use vm_image_config.provide_initrd
