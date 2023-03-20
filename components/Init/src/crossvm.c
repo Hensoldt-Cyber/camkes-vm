@@ -13,8 +13,6 @@
 #include <sel4vmmplatsupport/drivers/cross_vm_connection.h>
 #include <sel4vmmplatsupport/drivers/pci_helper.h>
 
-extern int get_crossvm_irq_num(void);
-
 static void event_camkes_callback(void *arg)
 {
     struct camkes_crossvm_connection *conn = arg;

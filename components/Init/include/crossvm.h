@@ -25,6 +25,13 @@ struct camkes_crossvm_connection {
 };
 
 /**
+ * Get the crossvm. This being an irq not passed through to the guest
+ * such that it can be used for emulation purposes
+ * @return  -1 for error, otherwise a positive value (irq number)
+ */
+int get_crossvm_irq_num(void);
+
+/**
  * Initialise and register a series of camkes crossvm connections with a given vm
  * @param[in] vm                    A handle to the VM
  * @param[in] connection_base_addr  The base guest physical address to interface the crossvm connection devices through
