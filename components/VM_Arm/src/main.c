@@ -89,13 +89,27 @@ int NUM_VCPUS = 1;
 #define seL4_DebugHalt() do{ printf("Halting...\n"); while(1); } while(0)
 #endif
 
-vka_t _vka;
-simple_t _simple;
-vspace_t _vspace;
-sel4utils_alloc_data_t _alloc_data;
-allocman_t *allocman;
-seL4_CPtr _fault_endpoint;
-irq_server_t *_irq_server;
+typedef struct _vmm_context_t vmm_context_t;
+
+struct _vm_context_t {
+    vmm_context_t *vmm;
+    vm_config_t const *config;
+    vm_t vm;
+} vm_context_t;
+
+typedef struct {
+    vka_t vka;
+    simple_t simple;
+    vspace_t vspace;
+    sel4utils_alloc_data_t alloc_data;
+    allocman_t *allocman;
+    seL4_CPtr fault_endpoint;
+    irq_server_t *irq_server;
+    struct ps_io_ops io_ops;
+    vm_context_t vm_context;
+} vmm_context_t;
+
+vmm_context_t my_vmm_context;
 
 vmm_pci_space_t *pci;
 vmm_io_port_list_t *io_ports;
@@ -107,8 +121,6 @@ char gen_dtb_buf[DTB_BUFFER_SIZE]; /* accessed by modules */
 static char gen_dtb_base_buf[DTB_BUFFER_SIZE];
 
 void *fdt_ori;
-
-struct ps_io_ops _io_ops;
 
 static jmp_buf restart_jmp_buf;
 
@@ -139,15 +151,16 @@ int get_crossvm_irq_num(void)
 
 static int _dma_morecore(size_t min_size, int cached, struct dma_mem_descriptor *dma_desc)
 {
+    vmm_context_t *vmm_context = &my_vmm_context;
+
     static uint32_t _vaddr = DMA_VSTART;
     struct seL4_ARM_Page_GetAddress getaddr_ret;
     seL4_CPtr frame;
     seL4_CPtr pd;
-    vka_t *vka;
+    vka_t *vka = &(vmm_context->vka);
     int err;
 
-    pd = simple_get_pd(&_simple);
-    vka = &_vka;
+    pd = simple_get_pd(&vmm_context->simple);
 
     /* Create a frame */
     frame = vka_alloc_frame_leaky(vka, seL4_PageBits);
@@ -350,8 +363,10 @@ static int vm_new_io_mapper(simple_t simple, vspace_t vspace, vka_t vka, ps_io_m
 
 static seL4_Error vm_simple_get_irq(void *data, int irq, seL4_CNode cnode, seL4_Word index, uint8_t depth)
 {
+    vmm_context_t *vmm_context = &my_vmm_context;
+
     seL4_Error res;
-    res = original_simple_get_irq_fn(_simple.data, irq, cnode, index, depth);
+    res = original_simple_get_irq_fn(vmm_context->simple.data, irq, cnode, index, depth);
     if (res == seL4_NoError) {
         return res;
     }
@@ -370,11 +385,14 @@ static vka_utspace_alloc_at_fn utspace_alloc_at_copy;
 static int camkes_vm_utspace_alloc_maybe_device_fn(void *data, const cspacepath_t *dest, seL4_Word type,
                                                    seL4_Word size_bits, bool can_use_dev, seL4_Word *res)
 {
+    vmm_context_t *vmm_context = &my_vmm_context;
+    vka_t *vka = &(vmm_context->vka);
+
     if (type == seL4_TCBObject) {
         seL4_CPtr cap = camkes_alloc(type, 0, 0);
         if (cap != seL4_CapNull) {
             cspacepath_t src;
-            vka_cspace_make_path(&_vka, cap, &src);
+            vka_cspace_make_path(vka, cap, &src);
             return vka_cnode_copy(dest, &src, seL4_AllRights);
         }
     }
@@ -384,13 +402,16 @@ static int camkes_vm_utspace_alloc_maybe_device_fn(void *data, const cspacepath_
 static int camkes_vm_utspace_alloc_at(void *data, const cspacepath_t *dest, seL4_Word type,
                                       seL4_Word size_bits, uintptr_t paddr, seL4_Word *res)
 {
+    vmm_context_t *vmm_context = &my_vmm_context;
+    vka_t *vka = &(vmm_context->vka);
+
     if (type == seL4_ARM_SmallPageObject) {
         for (dataport_frame_t *frame = __start__dataport_frames;
              frame < __stop__dataport_frames; frame++) {
             if (frame->paddr == paddr) {
                 if (frame->size == BIT(size_bits)) {
                     cspacepath_t src;
-                    vka_cspace_make_path(&_vka, frame->cap, &src);
+                    vka_cspace_make_path(vka, frame->cap, &src);
                     return vka_cnode_copy(dest, &src, seL4_AllRights);
                 } else {
                     ZF_LOGF("ERROR: found mapping for %p, wrong size %zu, expected %zu", (void *) paddr, frame->size, BIT(size_bits));
@@ -403,11 +424,10 @@ static int camkes_vm_utspace_alloc_at(void *data, const cspacepath_t *dest, seL4
 
 }
 
-static bool add_uts(const vm_config_t *vm_config, vka_t *vka, seL4_CPtr cap,
+static bool add_uts(vm_context_t *vm_context, seL4_CPtr cap,
                     uintptr_t paddr, size_t size_bits, bool is_device)
 {
-    cspacepath_t path;
-    vka_cspace_make_path(vka, cap, &path);
+    assert(vm_context);
 
     /*
      * The general usage concept for the different UT pools is:
@@ -444,7 +464,8 @@ static bool add_uts(const vm_config_t *vm_config, vka_t *vka, seL4_CPtr cap,
      *       "ram_paddr_base" is used for and and why it's different from
      *       "ram_base".
      */
-
+    vm_config_t const *vm_config = vm_context->config;
+    assert(vm_config);
     bool is_guest_ram = (paddr >= vm_config->ram.phys_base) &&
                         ((paddr - vm_config->ram.phys_base) < vm_config->ram.size);
 
@@ -452,24 +473,30 @@ static bool add_uts(const vm_config_t *vm_config, vka_t *vka, seL4_CPtr cap,
                   : is_guest_ram ? ALLOCMAN_UT_DEV_MEM
                   : ALLOCMAN_UT_DEV;
 
-    allocman_t *allocman = vka->data;
+    vmm_context_t *vmm_context = vm_context->vmm;
+    assert(vmm_context);
+    vka_t *vka = &(vmm_context->vka);
+    allocman_t *allocman = vmm_context->allocman;
+    assert(allocman);
 
+    cspacepath_t path;
+    vka_cspace_make_path(vka, cap, &path);
     return allocman_utspace_add_uts(allocman, 1, &path, &size_bits, &paddr,
                                     ut_type);
 }
 
-static int vmm_init(const vm_config_t *vm_config)
+static int vmm_init(vmm_context_t *vmm_context)
 {
-    vka_object_t fault_ep_obj;
-    vka_t *vka;
-    simple_t *simple;
-    vspace_t *vspace;
     int err;
+    allocman_t *allocman;
+    irq_server_t *irq_server;
 
-    vka = &_vka;
-    vspace = &_vspace;
-    simple = &_simple;
-    fault_ep_obj.cptr = 0;
+    vka_t *vka = &(vmm_context->vka);
+    simple_t *simple = &(vmm_context->simple);
+
+    vka_object_t fault_ep_obj = {
+        .cptr = 0,
+    };
 
     /* Camkes adds nothing to our address space, so this array is empty */
     void *existing_frames[] = {
@@ -491,6 +518,7 @@ static int vmm_init(const vm_config_t *vm_config)
                    get_allocator_mempool_size(), get_allocator_mempool()
                );
     assert(allocman);
+    vmm_context->allocman = allocman;
 
     allocman_make_vka(vka, allocman);
 
@@ -510,7 +538,7 @@ static int vmm_init(const vm_config_t *vm_config)
         uintptr_t paddr;
         bool is_device;
         seL4_CPtr cap = simple_get_nth_untyped(simple, i, &size_bits, &paddr, &is_device);
-        err = add_uts(vm_config, vka, cap, paddr, size_bits, is_device);
+        err = add_uts(vm_context, cap, paddr, size_bits, is_device);
         assert(!err);
     }
 
@@ -525,43 +553,46 @@ static int vmm_init(const vm_config_t *vm_config)
             uintptr_t paddr;
             seL4_CPtr cap = camkes_dtb_get_nth_untyped(i, &size_bits, &paddr);
             /* These UTs are considered device untypeds */
-            err = add_uts(vm_config, vka, cap, paddr, size_bits, true);
+            err = add_uts(vm_context, cap, paddr, size_bits, true);
             assert(!err);
         }
     }
     /* Initialize the vspace */
-    err = sel4utils_bootstrap_vspace(vspace, &_alloc_data,
-                                     simple_get_init_cap(simple, seL4_CapInitThreadPD), vka, NULL, NULL, existing_frames);
+    err = sel4utils_bootstrap_vspace(&(vmm_context->vspace),
+                                     &(vmm_context->alloc_data),
+                                     simple_get_init_cap(simple, seL4_CapInitThreadPD),
+                                     vka, NULL, NULL, existing_frames);
     assert(!err);
 
     /* Initialise device support */
-    err = vm_new_io_mapper(*simple, *vspace, *vka,
-                           &_io_ops.io_mapper);
+    err = vm_new_io_mapper(*simple, vmm_context->vspace, *vka,
+                           &(vmm_context->io_ops.io_mapper));
     assert(!err);
 
     /* Initialise MUX subsystem for platforms that need it */
 #ifdef CONFIG_PLAT_EXYNOS5410
-    err = mux_sys_init(&_io_ops, NULL, &_io_ops.mux_sys);
+    err = mux_sys_init(&(vmm_context->io_ops), NULL, &(vmm_context->io_ops.mux_sys));
     assert(!err);
 #endif
 
     /* Initialise DMA */
-    err = dma_dmaman_init(&_dma_morecore, NULL, &_io_ops.dma_manager);
+    err = dma_dmaman_init(&_dma_morecore, NULL, &(vmm_context->io_ops.dma_manager));
     assert(!err);
 
     /* Allocate an endpoint for listening to events */
     err = vka_alloc_endpoint(vka, &fault_ep_obj);
     assert(!err);
-    _fault_endpoint = fault_ep_obj.cptr;
+    vmm_context->fault_endpoint = fault_ep_obj.cptr;
 
-    err = sel4platsupport_new_malloc_ops(&_io_ops.malloc_ops);
+    err = sel4platsupport_new_malloc_ops(&vmm_context->io_ops.malloc_ops);
     assert(!err);
 
     /* Create an IRQ server */
-    _irq_server = irq_server_new(vspace, vka, IRQSERVER_PRIO,
-                                 simple, simple_get_cnode(simple), fault_ep_obj.cptr,
-                                 IRQ_MESSAGE_LABEL, 256, &_io_ops.malloc_ops);
-    assert(_irq_server);
+    irq_server = irq_server_new(&(vmm_context->vspace), vka, IRQSERVER_PRIO,
+                                simple, simple_get_cnode(simple), fault_ep_obj.cptr,
+                                IRQ_MESSAGE_LABEL, 256, &vmm_context->io_ops.malloc_ops);
+    assert(irq_server);
+    vmm_context->irq_server = irq_server;
 
     int num_pt_irqs = ARRAY_SIZE(linux_pt_irqs);
 
@@ -576,7 +607,7 @@ static int vmm_init(const vm_config_t *vm_config)
 
     for (int i = 0; i < num_irq_threads; i++) {
         /* Create new IRQ server threads and have them allocate notifications for us */
-        thread_id_t t_id = irq_server_thread_new(_irq_server, seL4_CapNull,
+        thread_id_t t_id = irq_server_thread_new(irq_server, seL4_CapNull,
                                                  0, -1);
         assert(t_id >= 0);
     }
@@ -685,9 +716,11 @@ static USED SECTION("_vmm_module") struct {} dummy_module;
 extern vmm_module_t __start__vmm_module[];
 extern vmm_module_t __stop__vmm_module[];
 
-static int install_vm_devices(vm_t *vm, const vm_config_t *vm_config)
+static int install_vm_devices(vm_context_t *vm_context)
 {
     int err;
+
+    vm_t *vm = vm_context->vm;
 
     /* Install virtual devices */
     if (config_set(CONFIG_VM_PCI_SUPPORT)) {
@@ -767,17 +800,23 @@ static int route_irqs(vm_vcpu_t *vcpu, irq_server_t *irq_server)
     return 0;
 }
 
-static int vm_dtb_init(vm_t *vm, const vm_config_t *vm_config)
+static int vm_dtb_init(vm_context_t *vm_context)
 {
     int err;
 
     /* Setup the base DTB. By default it's the one that CAmkES provides. */
-    camkes_io_fdt(&(_io_ops.io_fdt));
-    fdt_ori = (void *)ps_io_fdt_get(&_io_ops.io_fdt);
+    vmm_context_t *vmm_context = vm_context->vmm;
+    assert(vmm_context);
+    ps_io_fdt_t *io_fdt = &(vmm_context->io_ops.io_fdt);
+    camkes_io_fdt(io_fdt);
+    fdt_ori = (void *)io_fdt;
     ZF_LOGW_IF(!fdt_ori, "CAmkES did not provide a DTB");
+
     /* If explicitly requested, the CAmkES DTB can be ignored and one provided
      * by the file server can be used instead.
      */
+    vm_config_t const *vm_config = vm_context->config;
+    assert(vm_config);
     if ((NULL != vm_config->files.dtb_base) && ('\0' != vm_config->files.dtb_base[0])) {
         int dtb_fd = open(vm_config->files.dtb_base, 0);
         ZF_LOGI("using DTB file '%s' as base", vm_config->files.dtb_base);
@@ -870,8 +909,11 @@ static int vm_dtb_init(vm_t *vm, const vm_config_t *vm_config)
     return 0;
 }
 
-static int vm_dtb_finalize(vm_t *vm, const vm_config_t *vm_config)
+static int vm_dtb_finalize(vm_context_t *vm_context)
 {
+    vm_config_t const *vm_config = vm_context->config;
+    assert(vm_config);
+
     assert(vm_config->generate_dtb);
 
     if (config_set(CONFIG_VM_PCI_SUPPORT)) {
@@ -888,7 +930,8 @@ static int vm_dtb_finalize(vm_t *vm, const vm_config_t *vm_config)
             ZF_LOGE("Failed to find phandle in gic node");
             return -1;
         }
-        int err = fdt_generate_vpci_node(vm, pci, gen_dtb_buf, gic_phandle);
+        int err = fdt_generate_vpci_node(vm_context->vm, pci, gen_dtb_buf,
+                                         gic_phandle);
         if (err) {
             ZF_LOGE("Couldn't generate vpci_node (%d)", err);
             return -1;
@@ -906,8 +949,11 @@ static int load_generated_dtb(vm_t *vm, uintptr_t paddr, void *addr, size_t size
     return 0;
 }
 
-static int load_vm_images(vm_t *vm, const vm_config_t *vm_config)
+static int load_vm_images(vm_context_t *vm_context)
 {
+    vm_t *vm = vm_context->vm;
+    vm_config_t const *vm_config = vm_context->config;
+
     seL4_Word entry;
     seL4_Word dtb;
     int err;
@@ -956,7 +1002,7 @@ static int load_vm_images(vm_t *vm, const vm_config_t *vm_config)
     if (vm_config->generate_dtb) {
         ZF_LOGW_IF(vm_config->provide_dtb,
                    "provide_dtb and generate_dtb are both set. The provided dtb will NOT be loaded");
-        err = vm_dtb_finalize(vm, vm_config);
+        err = vm_dtb_finalize(vm_context);
         if (err) {
             ZF_LOGE("Couldn't generate DTB (%d)", err);
             return -1;
@@ -1022,10 +1068,13 @@ int register_async_event_handler(seL4_Word badge, async_event_handler_fn_t callb
 
 static int handle_async_event(vm_t *vm, seL4_Word badge, seL4_MessageInfo_t tag, void *cookie)
 {
+    vm_context_t *vm_context = (vm_context_t *)cookie;
+
     seL4_Word label = seL4_MessageInfo_get_label(tag);
     if (badge == 0) {
         if (label == IRQ_MESSAGE_LABEL) {
-            irq_server_handle_irq_ipc(_irq_server, tag);
+
+            irq_server_handle_irq_ipc(vm_context->vmm->irq_server, tag);
         } else {
             ZF_LOGE("Unknown label (%"SEL4_PRId_word")", label);
         }
@@ -1160,14 +1209,17 @@ int vm_smc_handler(vm_vcpu_t *vcpu, seL4_UserContext *regs)
 }
 #endif
 
-static int main_continued(void)
+static int main_continued(vmm_context_t *vmm_context)
 {
-    vm_t vm;
     int err;
+
+    vm_context_t *vm_context = &(vmm_context->vm_context);
+    vm_context->config = &vm_config;
+    vm_t *vm = &(vm_context->vm);
 
     /* setup for restart with a setjmp */
     while (setjmp(restart_jmp_buf) != 0) {
-        err = vmm_process_reboot_callbacks(&vm, &reboot_hooks_list);
+        err = vmm_process_reboot_callbacks(vm, &reboot_hooks_list);
         if (err) {
             ZF_LOGF("vm_process_reboot_callbacks failed: %d", err);
         }
@@ -1185,7 +1237,7 @@ static int main_continued(void)
     /* DTB initialization requires a running file server, as the DTB could be
      * based on a DTB file taken from there.
      */
-    err = vm_dtb_init(&vm, &vm_config);
+    err = vm_dtb_init(vm_context);
     if (err) {
         ZF_LOGE("Failed to init DTB (%d)", err);
         return -1;
@@ -1203,32 +1255,38 @@ static int main_continued(void)
         return err;
     }
 
-    err = vmm_init(&vm_config);
+    err = vmm_init(vmm_context);
     assert(!err);
 
     /* Create the VM */
-    err = vm_init(&vm, &_vka, &_simple, _vspace, &_io_ops, _fault_endpoint, get_instance_name());
+    err = vm_init(vm,
+                  &(vmm_context->vka),
+                  &(vmm_context->simple),
+                  vmm_context->vspace,
+                  &(vmm_context->io_ops),
+                  vmm_context->fault_endpoint,
+                  get_instance_name());
     assert(!err);
-    err = vm_register_unhandled_mem_fault_callback(&vm, unhandled_mem_fault_callback, NULL);
+    err = vm_register_unhandled_mem_fault_callback(vm, unhandled_mem_fault_callback, NULL);
     assert(!err);
-    err = vm_register_notification_callback(&vm, handle_async_event, NULL);
+    err = vm_register_notification_callback(vm, handle_async_event, vm_context);
     assert(!err);
 
     /* basic configuration flags */
-    vm.entry = vm_config.entry_addr;
-    vm.mem.clean_cache = vm_config.clean_cache;
-    vm.mem.map_one_to_one = vm_config.map_one_to_one; /* Map memory 1:1 if configured to do so */
+    vm->entry = vm_config.entry_addr;
+    vm->mem.clean_cache = vm_config.clean_cache;
+    vm->mem.map_one_to_one = vm_config.map_one_to_one; /* Map memory 1:1 if configured to do so */
 
 #ifdef CONFIG_TK1_SMMU
     /* install any iospaces */
     int iospace_caps;
-    err = simple_get_iospace_cap_count(&_simple, &iospace_caps);
+    err = simple_get_iospace_cap_count(&(vmm_context->simple), &iospace_caps);
     if (err) {
         ZF_LOGF("Failed to get iospace count");
     }
     for (int i = 0; i < iospace_caps; i++) {
-        seL4_CPtr iospace = simple_get_nth_iospace_cap(&_simple, i);
-        err = vm_guest_add_iospace(&vm, &_vspace, iospace);
+        seL4_CPtr iospace = simple_get_nth_iospace_cap(&(vmm_context->simple), i);
+        err = vm_guest_add_iospace(vm, &(vmm_context->vspace), iospace);
         if (err) {
             ZF_LOGF("Failed to add iospace");
         }
@@ -1241,7 +1299,7 @@ static int main_continued(void)
     seL4_CPtr sid_cap = camkes_get_smmu_sid_cap();
 
     ZF_LOGD("Assigning vspace to context bank");
-    err = seL4_ARM_CB_AssignVspace(cb_cap, vspace_get_root(&vm.mem.vm_vspace));
+    err = seL4_ARM_CB_AssignVspace(cb_cap, vspace_get_root(&vm->mem.vm_vspace));
     ZF_LOGF_IF(err, "Failed to assign vspace to CB");
 
     ZF_LOGD("Binding stream id to context bank");
@@ -1249,7 +1307,7 @@ static int main_continued(void)
     ZF_LOGF_IF(err, "Failed to bind CB to SID");
 #endif /* CONFIG_ARM_SMMU */
 
-    err = vm_create_default_irq_controller(&vm);
+    err = vm_create_default_irq_controller(vm);
     assert(!err);
 
 #ifdef CONFIG_ALLOW_SMC_CALLS
@@ -1259,7 +1317,7 @@ static int main_continued(void)
 
     /* Create CPUs and DTB node */
     for (int i = 0; i < NUM_VCPUS; i++) {
-        vm_vcpu_t *new_vcpu = create_vmm_plat_vcpu(&vm, VM_PRIO - 1);
+        vm_vcpu_t *new_vcpu = create_vmm_plat_vcpu(vm, VM_PRIO - 1);
         assert(new_vcpu);
     }
     if (vm_config.generate_dtb) {
@@ -1277,13 +1335,13 @@ static int main_continued(void)
     }
 
     /* Route IRQs */
-    err = route_irqs(vm_vcpu, _irq_server);
+    err = route_irqs(vm_vcpu, vmm_context->irq_server);
     if (err) {
         return -1;
     }
 
     /* Install devices */
-    err = install_vm_devices(&vm, &vm_config);
+    err = install_vm_devices(vm_context);
     if (err) {
         ZF_LOGE("Error: Failed to install VM devices");
         seL4_DebugHalt();
@@ -1291,7 +1349,7 @@ static int main_continued(void)
     }
 
     /* Load system images */
-    err = load_vm_images(&vm, &vm_config);
+    err = load_vm_images(vm_context);
     if (err) {
         ZF_LOGE("Failed to load VM image");
         seL4_DebugHalt();
@@ -1305,7 +1363,7 @@ static int main_continued(void)
     }
 
     while (1) {
-        err = vm_run(&vm);
+        err = vm_run(vm);
         if (err) {
             ZF_LOGE("Failed to run VM");
             seL4_DebugHalt();
@@ -1339,5 +1397,7 @@ int run(void)
         }
     }
 
-    return main_continued();
+    vmm_context_t *vmm_context = &my_vmm_context;
+
+    return main_continued(vmm_context);
 }
