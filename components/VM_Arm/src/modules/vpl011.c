@@ -369,14 +369,17 @@ static int vpl011_install(vm_t *vm, const vpl011_t *vpl011)
     err = fdt_appendprop_u64(fdt, node, "reg", vpl011->size);
     assert(!err);
 
+// #if defined(CONFIG_PLAT_QEMU_ARM_VIRT)
+
     /* ToDO: clarify what to use here */
     err = fdt_appendprop_string(fdt, node, "clock-names", "uartclk");
     assert(!err);
     err = fdt_appendprop_string(fdt, node, "clock-names", "apb_pclk");
     assert(!err);
-    err = fdt_appendprop_u32(fdt, node, "clocks", 0x8000);
+
+    err = fdt_appendprop_u32(fdt, node, "clocks", 0x0b);
     assert(!err);
-    err = fdt_appendprop_u32(fdt, node, "clocks", 0x8000);
+    err = fdt_appendprop_u32(fdt, node, "clocks", 0x0b);
     assert(!err);
 
     /* Interrupt type: 0 = PPI, 1 = SPI */
@@ -388,6 +391,118 @@ static int vpl011_install(vm_t *vm, const vpl011_t *vpl011)
     /* Interrupt trigger: 4 = IRQ_TYPE_LEVEL_HIGH */
     err = fdt_appendprop_u32(fdt, node, "interrupts", 4);
     assert(!err);
+
+// #elif defined(CONFIG_PLAT_ODROIDC2)
+//
+//     // https://www.kernel.org/doc/Documentation/devicetree/bindings/serial/amlogic%2Cmeson-uart.txt
+//     //
+//     // Amlogic Meson SoC UART Serial Interface
+//     //
+//     // The Amlogic Meson SoC UART Serial Interface is present on a large range
+//     // of SoCs, and can be present either in the "Always-On" power domain or the
+//     // "Everything-Else" power domain.
+//     //
+//     // The particularity of the "Always-On" Serial Interface is that the hardware
+//     // is active since power-on and does not need any clock gating and is usable
+//     // as very early serial console.
+//     //
+//     // Required properties:
+//     // - compatible : compatible: value should be different for each SoC family as :
+//     // 	- Meson6 : "amlogic,meson6-uart"
+//     // 	- Meson8 : "amlogic,meson8-uart"
+//     // 	- Meson8b : "amlogic,meson8b-uart"
+//     // 	- GX (GXBB, GXL, GXM) : "amlogic,meson-gx-uart"
+//     // 	eventually followed by : "amlogic,meson-ao-uart" if this UART interface
+//     // 	is in the "Always-On" power domain.
+//     // - reg : offset and length of the register set for the device.
+//     // - interrupts : identifier to the device interrupt
+//     // - clocks : a list of phandle + clock-specifier pairs, one for each
+//     // 	   entry in clock names.
+//     // - clock-names :
+//     //    * "xtal" for external xtal clock identifier
+//     //    * "pclk" for the bus core clock, either the clk81 clock or the gate clock
+//     //    * "baud" for the source of the baudrate generator, can be either the xtal
+//     // 	or the pclk.
+//     //
+//     // e.g.
+//     // uart_A: serial@84c0 {
+//     // 	compatible = "amlogic,meson-gx-uart";
+//     // 	reg = <0x0 0x84c0 0x0 0x14>;
+//     // 	interrupts = <GIC_SPI 26 IRQ_TYPE_EDGE_RISING>;
+//     // 	/* Use xtal as baud rate clock source */
+//     // 	clocks = <&xtal>, <&clkc CLKID_UART0>, <&xtal>;
+//     // 	clock-names = "xtal", "pclk", "baud";
+//     // };
+//     //
+//     //
+//     // err = fdt_appendprop_string(fdt, node, "status", "okay");
+//     // assert(!err);
+//     //
+//     // // err = fdt_appendprop_string(fdt, node, "clock-names", "xtal");
+//     // // assert(!err);
+//     // // err = fdt_appendprop_string(fdt, node, "clock-names", "pclk");
+//     // // assert(!err);
+//     // // err = fdt_appendprop_string(fdt, node, "clock-names", "baud");
+//     // // assert(!err);
+//     //
+//     // // err = fdt_appendprop_u32(fdt, node, "clocks", 0x0b);
+//     // // assert(!err);
+//     // // err = fdt_appendprop_u32(fdt, node, "clocks", 0x11);
+//     // // assert(!err);
+//     // // err = fdt_appendprop_u32(fdt, node, "clocks", 0x03);
+//     // // assert(!err);
+//     // // err = fdt_appendprop_u32(fdt, node, "clocks", 0x0b);
+//     // // assert(!err);
+//     //
+//     // err = fdt_appendprop_u32(fdt, node, "interrupts", 0);
+//     // assert(!err);
+//     // err = fdt_appendprop_u32(fdt, node, "interrupts", 0xc1);
+//     // assert(!err);
+//     // err = fdt_appendprop_u32(fdt, node, "interrupts", 1);
+//     // assert(!err);
+//     //
+//     //  serial@4c0 {
+//     //      compatible = "amlogic,meson-gx-uart\0amlogic,meson-ao-uart";
+//     //      reg = < 0x00 0x4c0 0x00 0x18 >;
+//     //      interrupts = < 0x00 0xc1 0x01 >;
+//     //      status = "okay";
+//     //      clocks = < 0x0b 0x11 0x03 0x0b >;
+//     //      clock-names = "xtal\0pclk\0baud";
+//     //      pinctrl-0 = < 0x14 >;
+//     //      pinctrl-names = "default";
+//     //  };
+//
+//     // err = fdt_appendprop_string(fdt, node, "status", "okay");
+//     // assert(!err);
+//     //
+//     // err = fdt_appendprop_string(fdt, node, "clock-names", "dummy");
+//     // assert(!err);
+//     // err = fdt_appendprop_string(fdt, node, "clock-names", "xtal");
+//     // assert(!err);
+//     // err = fdt_appendprop_string(fdt, node, "clock-names", "pclk");
+//     // assert(!err);
+//     // err = fdt_appendprop_string(fdt, node, "clock-names", "baud");
+//     // assert(!err);
+//
+//     // err = fdt_appendprop_u32(fdt, node, "clocks", 0x0b);
+//     // assert(!err);
+//     // err = fdt_appendprop_u32(fdt, node, "clocks", 0x11);
+//     // assert(!err);
+//     // err = fdt_appendprop_u32(fdt, node, "clocks", 0x03);
+//     // assert(!err);
+//     // err = fdt_appendprop_u32(fdt, node, "clocks", 0x0b);
+//     // assert(!err);
+//
+//     err = fdt_appendprop_u32(fdt, node, "interrupts", 0);
+//     assert(!err);
+//     err = fdt_appendprop_u32(fdt, node, "interrupts", 0xc1);
+//     assert(!err);
+//     err = fdt_appendprop_u32(fdt, node, "interrupts", 0x01);
+//     assert(!err);
+//
+// #else
+// #error "unsupported platform"
+// #endif
 
     return 0;
 }
