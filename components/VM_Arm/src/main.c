@@ -855,12 +855,6 @@ static int vm_dtb_init(vm_t *vm, const vm_config_t *vm_config)
 
     /* Now the DTB is in gen_dtb_buf and all manipulation must happen there. */
 
-    err = fdt_generate_plat_vcpu_node(vm, gen_dtb_buf);
-    if (err) {
-        ZF_LOGE("Couldn't generate plat_vcpu_node, error %d", err);
-        return -1;
-    }
-
     /* generate a memory node */
     err = fdt_generate_memory_node(gen_dtb_buf, vm_config->ram.base,
                                    vm_config->ram.size);
@@ -874,7 +868,15 @@ static int vm_dtb_init(vm_t *vm, const vm_config_t *vm_config)
 
 static int vm_dtb_finalize(vm_t *vm, const vm_config_t *vm_config)
 {
+    int err;
+
     assert(vm_config->generate_dtb);
+
+    err = fdt_generate_plat_vcpu_node(vm, gen_dtb_buf);
+    if (err) {
+        ZF_LOGE("Couldn't generate plat_vcpu_node, error %d", err);
+        return -1;
+    }
 
     if (config_set(CONFIG_VM_PCI_SUPPORT)) {
         /* Modules can add PCI devices, so the PCI device tree node can be
@@ -890,7 +892,7 @@ static int vm_dtb_finalize(vm_t *vm, const vm_config_t *vm_config)
             ZF_LOGE("Failed to find phandle in gic node");
             return -1;
         }
-        int err = fdt_generate_vpci_node(vm, pci, gen_dtb_buf, gic_phandle);
+        err = fdt_generate_vpci_node(vm, pci, gen_dtb_buf, gic_phandle);
         if (err) {
             ZF_LOGE("Couldn't generate vpci_node (%d)", err);
             return -1;
