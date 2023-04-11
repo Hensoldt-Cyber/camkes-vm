@@ -21,3 +21,25 @@ jobs:
     - uses: seL4/ci-actions/camkes-vm@master
       with:
         march: ${{ matrix.march }}
+    - name: Get machine queue
+      uses: actions/checkout@v2
+      with:
+        repository: seL4/machine_queue
+        path: machine_queue
+        token: ${{ secrets.PRIV_REPO_TOKEN }}
+    - name: Upload images
+      uses: actions/upload-artifact@v2
+      with:
+        name: images-${{ matrix.march }}
+        path: '*-images.tar.gz'
+    - name: Download image
+      uses: actions/download-artifact@v2
+      with:
+        name: images-${{ matrix.march }}
+    - name: Run
+      uses: seL4/ci-actions/camkes-vm-hw@master
+      with:
+        march: ${{ matrix.march }}
+        index: $${{ strategy.job-index }}
+      env:
+        HW_SSH: ${{ secrets.HW_SSH }}
