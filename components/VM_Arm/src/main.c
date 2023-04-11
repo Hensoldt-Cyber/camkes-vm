@@ -811,6 +811,7 @@ static int vm_dtb_init(vm_t *vm, const vm_config_t *vm_config)
     if (camkes_dtb_get_plat_keep_devices) {
         keep_devices = camkes_dtb_get_plat_keep_devices(&num_keep_devices);
     }
+    ZF_LOGE("test: num_keep_devices %d", num_keep_devices);
     if (num_keep_devices) {
         fdtgen_keep_nodes(context, (const char **)keep_devices, num_keep_devices);
     } else {
@@ -823,6 +824,7 @@ static int vm_dtb_init(vm_t *vm, const vm_config_t *vm_config)
     if (camkes_dtb_get_plat_keep_devices_and_subtree) {
         keep_devices_and_subtree = camkes_dtb_get_plat_keep_devices_and_subtree(&num_keep_devices_and_subtree);
     }
+    ZF_LOGE("test: num_keep_devices %d", num_keep_devices_and_subtree);
     if (num_keep_devices_and_subtree) {
         for (int i = 0; i < num_keep_devices_and_subtree; i++) {
             fdtgen_keep_node_subtree(context, fdt_ori, keep_devices_and_subtree[i]);
@@ -844,6 +846,8 @@ static int vm_dtb_init(vm_t *vm, const vm_config_t *vm_config)
         paths = camkes_dtb_get_node_paths(&num_paths);
     }
     fdtgen_keep_nodes(context, (const char **)paths, num_paths);
+
+    ZF_LOGE("test: fdtgen_generate...");
 
     /* build a DTB in gen_dtb_buf */
     err = fdtgen_generate(context, fdt_ori);
