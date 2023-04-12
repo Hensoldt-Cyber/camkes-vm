@@ -204,11 +204,7 @@ function(DefineCAmkESVMFileServer)
     # Build CPIO archive. It implicitly depends on all files in CPIO_FILES,
     # which have their own dependencies each from above. So we don't have any
     # additional explicit dependencies here.
-    # Unfortunately MakeCPIO() currently allows passing plain file names only,
-    # it does not support paths. Thus, the archive will be created in the built
-    # output root folder, having it the instance specific subfolder would be a
-    # bit cleaner actually.
-    set(CPIO_ARCHIVE "${PARAM_INSTANCE}_cpio_archive.o")
+    set(CPIO_ARCHIVE "${PARAM_INSTANCE}/cpio_archive.o")
     include(cpio)
     # Due to the way MakeCPIO() is implemented, the file list must have absolute
     # paths. Since we don't require CMake 3.12+ yet, we can't use the list
@@ -219,11 +215,20 @@ function(DefineCAmkESVMFileServer)
     endforeach()
     MakeCPIO("${CPIO_ARCHIVE}" "${CPIO_FILES_FQN}")
 
-    # Build a library from the CPIO archive. Ensure the lib has a unique name
-    # within the project, as there could be more than one file server.
+    # Build a library from the CPIO archive. Even if put in the lib in an
+    # instance specific output folder, the lib's name has to be unique within
+    # the project, because it is also used as CMake target.
     set(FILESERVER_LIB "${PARAM_INSTANCE}_file_archive_cpio")
     add_library("${FILESERVER_LIB}" STATIC EXCLUDE_FROM_ALL "${CPIO_ARCHIVE}")
-    set_property(TARGET "${FILESERVER_LIB}" PROPERTY LINKER_LANGUAGE C)
+    set_target_properties(
+        "${FILESERVER_LIB}"
+        PROPERTIES
+            ARCHIVE_OUTPUT_DIRECTORY
+            "${PARAM_INSTANCE}"
+            LINKER_LANGUAGE
+            "C"
+    )
+
     # Add the CPIO-library to the FileServer component
     ExtendCAmkESComponentInstance("${PARAM_TYPE}" "${PARAM_INSTANCE}" LIBS "${FILESERVER_LIB}")
 
