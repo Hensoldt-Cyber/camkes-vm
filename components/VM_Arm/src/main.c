@@ -695,6 +695,7 @@ static seL4_CPtr restart_tcb;
 
 static void restart_event(void *arg)
 {
+    ZF_LOGI("restart event");
     int ret UNUSED = restart_event_reg_callback(restart_event, NULL);
     seL4_UserContext context = {
         .pc = (seL4_Word)restart_component,
@@ -751,6 +752,11 @@ WEAK int vm_init_ram(vm_t *vm, const vm_config_t *vm_config)
         return 0;
     }
 
+    ZF_LOGI("VM: %p - %p (RAM)",
+            (void *)vm_config->ram.base,
+            (void *)(vm_config->ram.base + vm_config->ram.size),
+            vm_config->files.kernel);
+
     int err = vm_ram_register_at(vm, vm_config->ram.base, vm_config->ram.size,
                                  vm->mem.map_one_to_one);
     if (err) {
@@ -789,7 +795,7 @@ static int install_vm_devices(vm_t *vm, const vm_config_t *vm_config)
     int max_vmm_modules = (int)(__stop__vmm_module - __start__vmm_module);
     int num_vmm_modules = 0;
     for (vmm_module_t *i = __start__vmm_module; i < __stop__vmm_module; i++) {
-        ZF_LOGE("module name: %s", i->name);
+        ZF_LOGI("module: %s", i->name);
         i->init_module(vm, i->cookie);
         num_vmm_modules++;
     }
@@ -811,11 +817,13 @@ static int route_irq(int irq_num, vm_vcpu_t *vcpu, irq_server_t *irq_server)
 
     irq_token_t token = calloc(1, sizeof(struct irq_token));
     if (token == NULL) {
+        ZF_LOGE("Failed allocate irq_token");
         return -1;
     }
 
     int err = vm_register_irq(vcpu, irq.irq.number, &do_irq_server_ack, token);
     if (err == -1) {
+        ZF_LOGE("Failed register IRQ %d", irq.irq.number);
         return -1;
     }
 
@@ -834,10 +842,14 @@ static int route_irq(int irq_num, vm_vcpu_t *vcpu, irq_server_t *irq_server)
 static int route_irqs(vm_vcpu_t *vcpu, irq_server_t *irq_server)
 {
     int err;
-    for (int i = 0; i < ARRAY_SIZE(linux_pt_irqs); i++) {
+
+    int num_irqs = ARRAY_SIZE(linux_pt_irqs);
+    for (int i = 0; i < num_irqs; i++) {
         int irq_num = linux_pt_irqs[i];
+        ZF_LOGI("Routing OS-IRQ[%d]=%d", i, irq_num);
         err = route_irq(irq_num, vcpu, irq_server);
         if (err) {
+            ZF_LOGE("Failed to route OS-IRQ[%d]=%d (%d)", i, irq_num, err);
             return err;
         }
     }
@@ -846,8 +858,10 @@ static int route_irqs(vm_vcpu_t *vcpu, irq_server_t *irq_server)
         int *dtb_irqs = camkes_dtb_get_irqs(&num_dtb_irqs);
         for (int i = 0; i < num_dtb_irqs; i++) {
             int irq_num = dtb_irqs[i];
+            ZF_LOGI("Routing DTB-IRQ[%d]=%d", i, irq_num);
             err = route_irq(irq_num, vcpu, irq_server);
             if (err) {
+                ZF_LOGE("Failed to route DTB-IRQ[%d]=%d (%d)", i, irq_num, err);
                 return err;
             }
         }
@@ -910,6 +924,7 @@ static int vm_dtb_init(vm_t *vm, const vm_config_t *vm_config)
         if (dtb_fd < 0) {
             ZF_LOGE("opening DTB file failed (%d)", dtb_fd);
         } else {
+            ZF_LOGI("read dtb_base...");
             size_t dtb_len = read(dtb_fd, gen_dtb_base_buf, sizeof(gen_dtb_base_buf));
             close(dtb_fd);
             if (dtb_len <= 0) {
@@ -919,12 +934,17 @@ static int vm_dtb_init(vm_t *vm, const vm_config_t *vm_config)
                 fdt_ori = gen_dtb_base_buf;
             }
         }
+    } else {
+        ZF_LOGI("generating DTB for VM from scratch");
     }
 
     /* We are done if DTB generation is not enabled. */
     if (!vm_config->generate_dtb) {
+        ZF_LOGI("no DTB to generate");
         return 0;
     }
+
+    ZF_LOGE("init generate_dtb...");
 
     ZF_LOGW_IF(!fdt_ori, "No base DTB set");
 
@@ -960,12 +980,16 @@ static int vm_dtb_init(vm_t *vm, const vm_config_t *vm_config)
     cnt = 0;
     if (camkes_dtb_get_plat_keep_devices_and_subtree) {
         nodes = (char const **)camkes_dtb_get_plat_keep_devices_and_subtree(&cnt);
-        ZF_LOGI_IF(cnt > 0, "Keeping DTB subtrees: %d", cnt);
+        if (cnt > 0) {
+            ZF_LOGI("Keeping DTB subtrees: %d", cnt);
+        }
     }
     if (0 == cnt) {
         nodes = plat_keep_device_and_subtree;
         cnt = ARRAY_SIZE(plat_keep_device_and_subtree);
-        ZF_LOGI_IF(cnt > 0, "Keeping DTB subtrees (plat): %d", cnt);
+        if (cnt > 0) {
+            ZF_LOGI("Keeping DTB subtrees (plat): %d", cnt);
+        }
     }
     if (cnt > 0) {
         assert(fdt_ori);
@@ -1057,13 +1081,14 @@ static int vm_dtb_finalize(vm_t *vm, const vm_config_t *vm_config)
         }
     }
 
+    ZF_LOGI("fdt_pack...");
     fdt_pack(gen_dtb_buf);
     return 0;
 }
 
 static int load_generated_dtb(vm_t *vm, uintptr_t paddr, void *addr, size_t size, size_t offset, void *cookie)
 {
-    ZF_LOGD("paddr: 0x%lx, addr: 0x%lx, size: 0x%lx, offset: 0x%lx", paddr, (seL4_Word) addr, size, offset);
+    ZF_LOGV("paddr: 0x%lx, addr: 0x%lx, size: 0x%lx, offset: 0x%lx", paddr, (seL4_Word) addr, size, offset);
     memcpy(addr, cookie + offset, size);
     return 0;
 }
@@ -1150,6 +1175,11 @@ static int load_vm_images(vm_t *vm, const vm_config_t *vm_config)
         return -1;
     }
 
+    ZF_LOGI("VM: %p - %p (kernel '%s')",
+            (void *)kernel_image_info.kernel_image.load_paddr,
+            (void *)(kernel_image_info.kernel_image.load_paddr + kernel_image_info.kernel_image.size),
+            vm_config->files.kernel);
+
     /* generate a chosen node */
     if (vm_config->generate_dtb) {
         err = fdt_generate_chosen_node(gen_dtb_buf, vm_config->kernel_stdout,
@@ -1161,11 +1191,16 @@ static int load_vm_images(vm_t *vm, const vm_config_t *vm_config)
     }
 
     /* Attempt to load initrd if provided */
-    guest_image_t initrd_image;
+    guest_image_t initrd_image = {0};
     if (vm_config->provide_initrd) {
         ZF_LOGI("Loading Initrd: '%s'", vm_config->files.initrd);
         err = vm_load_guest_module(vm, vm_config->files.initrd,
                                    vm_config->initrd_addr, 0, &initrd_image);
+        ZF_LOGI("VM: %p - %p (Initrd '%s')",
+                initrd_image.load_paddr,
+                (void *)(initrd_image.load_paddr + initrd_image.size),
+                vm_config->files.initrd);
+
         void *initrd = (void *)initrd_image.load_paddr;
         if (!initrd || err) {
             return -1;
@@ -1184,12 +1219,16 @@ static int load_vm_images(vm_t *vm, const vm_config_t *vm_config)
     if (vm_config->generate_dtb) {
         ZF_LOGW_IF(vm_config->provide_dtb,
                    "provide_dtb and generate_dtb are both set. The provided dtb will NOT be loaded");
+        ZF_LOGI("vm_dtb_finalize...");
         err = vm_dtb_finalize(vm, vm_config);
         if (err) {
             ZF_LOGE("Couldn't generate DTB (%d)", err);
             return -1;
         }
         ZF_LOGI("Loading Generated DTB");
+        ZF_LOGI("VM: %p - %p (generated DTB)",
+                (void *)vm_config->dtb_addr,
+                (void *)(vm_config->dtb_addr + sizeof(gen_dtb_buf)));
         print_dtb(gen_dtb_buf, 0, 0);
         vm_ram_mark_allocated(vm, vm_config->dtb_addr, sizeof(gen_dtb_buf));
         vm_ram_touch(vm, vm_config->dtb_addr, sizeof(gen_dtb_buf), load_generated_dtb,
@@ -1206,12 +1245,17 @@ static int load_vm_images(vm_t *vm, const vm_config_t *vm_config)
         if (!dtb || err) {
             return -1;
         }
+        ZF_LOGD("VM: %p - %p (DTB '%s')",
+                (void *)dtb_image.load_paddr,
+                (void *)(dtb_image.load_paddr + dtb_image.size),
+                vm_config->files.dtb);
     } else {
         ZF_LOGW("%s not given a DTB - This may be appropriate for your guest, but it " \
                 "may also break things!", get_instance_name());
     }
 
     /* Set boot arguments */
+    ZF_LOGI("Entering VM at %p", (void *)entry);
     err = vcpu_set_bootargs(vm->vcpus[BOOT_VCPU], entry, MACH_TYPE, dtb);
     if (err) {
         ZF_LOGE("Error: Failed to set boot arguments (%d)", err);
@@ -1272,7 +1316,7 @@ static int handle_async_event(vm_t *vm, seL4_Word badge, seL4_MessageInfo_t tag,
             }
         }
         if (!found_handler) {
-            ZF_LOGE("Unknown badge (%"SEL4_PRId_word")", badge);
+            ZF_LOGE("No handler for badge %"SEL4_PRId_word, badge);
         }
     }
     return 0;
@@ -1416,36 +1460,43 @@ static int main_continued(void)
     /* DTB initialization requires a running file server, as the DTB could be
      * based on a DTB file taken from there.
      */
+    ZF_LOGE("vm_dtb_init...");
     err = vm_dtb_init(&vm, &vm_config);
     if (err) {
         ZF_LOGE("Failed to init DTB (%d)", err);
         return -1;
     }
 
+    ZF_LOGE("vmm_pci_init...");
     err = vmm_pci_init(&pci);
     if (err) {
         ZF_LOGE("Failed to initialise vmm pci");
         return err;
     }
 
+    ZF_LOGE("vmm_io_port_init...");
     err = vmm_io_port_init(&io_ports, FREE_IOPORT_START);
     if (err) {
         ZF_LOGE("Failed to initialise VM ioports");
         return err;
     }
 
+    ZF_LOGI("VMM init");
     err = vmm_init(&vm_config);
     if (err) {
         ZF_LOGE("VMM init failed (%d)", err);
         return -1;
     }
 
+
     /* Create the VM */
+    ZF_LOGD("initialize VM '%s'", get_instance_name());
     err = vm_init(&vm, &_vka, &_simple, _vspace, &_io_ops, _fault_endpoint, get_instance_name());
     if (err) {
         ZF_LOGE("VM init failed (%d)", err);
         return -1;
     }
+    ZF_LOGD("VM%d ('%s')", vm.vm_id, vm.vm_name);
 
     err = vm_register_unhandled_mem_fault_callback(&vm, unhandled_mem_fault_callback, NULL);
     if (err) {
@@ -1459,7 +1510,9 @@ static int main_continued(void)
         return -1;
     }
 
+
     /* basic configuration flags */
+    ZF_LOGE("basic vm setup...");
     vm.entry = vm_config.entry_addr;
     vm.mem.clean_cache = vm_config.clean_cache;
     vm.mem.map_one_to_one = vm_config.map_one_to_one; /* Map memory 1:1 if configured to do so */
@@ -1488,6 +1541,7 @@ static int main_continued(void)
     }
 
     /* Install devices */
+    ZF_LOGE("install_vm_devices...");
     err = install_vm_devices(&vm, &vm_config);
     if (err) {
         ZF_LOGE("Error: Failed to install VM devices");
@@ -1495,17 +1549,21 @@ static int main_continued(void)
     }
 
     /* Load system images */
+    ZF_LOGE("load_vm_images...");
     err = load_vm_images(&vm, &vm_config);
     if (err) {
         ZF_LOGE("Failed to load VM image");
         return -1;
     }
 
+    ZF_LOGI("vcpu_start...");
     err = vcpu_start(vm.vcpus[BOOT_VCPU]);
     if (err) {
         ZF_LOGE("Failed to start Boot VCPU (%d)", err);
         return -1;
     }
+
+    ZF_LOGI("run VM%d ('%s')", vm.vm_id, vm.vm_name);
 
     for(;;) {
         err = vm_run(&vm);
