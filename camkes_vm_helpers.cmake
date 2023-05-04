@@ -167,7 +167,9 @@ function(DefineCAmkESVMFileServer)
         endforeach()
     endforeach()
 
-    # now process the file/deps list
+    # Build CPIO archive. The archive creation has an implicit dependency on
+    # all files to be added. An empty file list is supported for convenience
+    # reasons, as it can happen in certain build configurations.
     get_target_property(files ${FSRV_TARGET} FILES)
     if(NOT files) # this also catches "files-NOTFOUND" if property is not set
         set(files "")
@@ -177,48 +179,13 @@ function(DefineCAmkESVMFileServer)
         set(deps "")
     endif()
 
-    set(CPIO_FILES "")
-    foreach(item IN LISTS files) # <CPIO_NAME>:<FILENAME>
-        string(
-            REGEX
-                MATCH
-                "^([^:]+):([^:]+)$"
-                cpio_item
-                "${item}"
-        )
-        if(NOT cpio_item)
-            message(FATAL_ERROR "invalid CPIO file format: '${item}'")
-        endif()
-        set(CPIO_NAME "${CMAKE_MATCH_1}")
-        set(FILE_NAME "${CMAKE_MATCH_2}")
-        set(CPIO_FILE "${PARAM_INSTANCE}/files/${CPIO_NAME}")
-        add_custom_command(
-            OUTPUT "${CPIO_FILE}"
-            COMMENT "copy: ${FILE_NAME} -> ${CPIO_FILE}"
-            COMMAND
-                ${CMAKE_COMMAND} -E copy "${FILE_NAME}" "${CPIO_FILE}"
-            VERBATIM
-            DEPENDS ${FILE_NAME} ${deps}
-        )
-        # There is no need to create an explicit target for the command above,
-        # the archive creation depends on all files in CPIO_FILES, where the
-        # command above is the creation rule for each one.
-        list(APPEND CPIO_FILES "${CPIO_FILE}")
-    endforeach()
-
-    # Build CPIO archive. It implicitly depends on all files in CPIO_FILES,
-    # which have their own dependencies each from above. So we don't have any
-    # additional explicit dependencies here.
-    set(CPIO_ARCHIVE "${PARAM_INSTANCE}/cpio_archive.o")
+    # Unfortunately MakeCPIO() currently allows passing plain file names only,
+    # it does not support paths. Thus, the archive will be created in the built
+    # output root folder, having it the instance specific subfolder would be a
+    # bit cleaner actually.
+    set(CPIO_ARCHIVE "${PARAM_INSTANCE}_cpio_archive.o")
     include(cpio)
-    # Due to the way MakeCPIO() is implemented, the file list must have absolute
-    # paths. Since we don't require CMake 3.12+ yet, we can't use the list
-    # transformation functions, but have to prepend each element manually.
-    set(CPIO_FILES_FQN "")
-    foreach(f IN LISTS CPIO_FILES)
-        list(APPEND CPIO_FILES_FQN "${CMAKE_CURRENT_BINARY_DIR}/${f}")
-    endforeach()
-    MakeCPIO("${CPIO_ARCHIVE}" "${CPIO_FILES_FQN}")
+    MakeCPIO("${CPIO_ARCHIVE}" "${files}" DEPENDS "${deps}")
 
     # Build a library from the CPIO archive. Even if put in the lib in an
     # instance specific output folder, the lib's name has to be unique within
