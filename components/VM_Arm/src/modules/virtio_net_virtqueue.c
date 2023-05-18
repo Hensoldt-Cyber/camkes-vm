@@ -85,7 +85,6 @@ static void virtio_net_notify_free_send(vswitch_node_t *node)
 static int virtio_net_notify_recv(vswitch_node_t *node)
 {
     int err;
-    struct ether_addr myaddr;
     void *buf = NULL;
     size_t buf_size = 0;
     vq_flags_t flag;
@@ -97,7 +96,7 @@ static int virtio_net_notify_recv(vswitch_node_t *node)
         int enqueue_res = 0;
         if (camkes_virtqueue_device_gather_copy_buffer(node->virtqueues.recv_queue, &handle, (void *)emul_buf, len) < 0) {
             ZF_LOGW("Dropping frame for " PR_MAC802_ADDR ": Can't gather vq buffer.",
-                    PR_MAC802_ADDR_ARGS(&myaddr));
+                    PR_MAC802_ADDR_ARGS(&(node->addr)));
             continue;
         }
 
