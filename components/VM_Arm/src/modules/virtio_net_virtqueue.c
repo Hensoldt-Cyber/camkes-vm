@@ -38,11 +38,7 @@ void self_mac(uint8_t *mac)
 
 static int tx_virtqueue_forward(char *eth_buffer, size_t length, virtio_net_t *virtio_net)
 {
-    struct ether_addr *destaddr;
     int err, destnode_start_idx, destnode_n_idxs;
-
-    /* The dest MAC addr is the first member of an ethernet frame. */
-    destaddr = (struct ether_addr *)eth_buffer;
 
     destnode_n_idxs = virtio_vswitch.n_connected;
     destnode_start_idx = 0;
@@ -59,7 +55,7 @@ static int tx_virtqueue_forward(char *eth_buffer, size_t length, virtio_net_t *v
         if (camkes_virtqueue_driver_scatter_send_buffer(destnode->virtqueues.send_queue, (void *)eth_buffer, length) < 0) {
             ZF_LOGE("Unknown error while enqueuing available buffer for dest "
                     PR_MAC802_ADDR ".",
-                    PR_MAC802_ADDR_ARGS(destaddr));
+                    PR_MAC802_ADDR_ARGS(&(destnode->addr)));
             continue;
         }
         destnode->virtqueues.send_queue->notify();
