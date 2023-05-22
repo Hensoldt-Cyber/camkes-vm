@@ -115,10 +115,11 @@ static int virtio_net_notify(vm_t *vmm, void *cookie)
 void make_virtqueue_virtio_net(vm_t *vm, void *cookie)
 {
     int err;
-    virtio_net_callbacks_t callbacks;
-    callbacks.tx_callback = tx_virtqueue_forward;
-    callbacks.irq_callback = NULL;
-    callbacks.get_mac_addr_callback = self_mac;
+    virtio_net_callbacks_t callbacks = {
+        .tx_callback = tx_virtqueue_forward,
+        .irq_callback = NULL,
+        .get_mac_addr_callback = self_mac,
+    };
     virtio_net = virtio_net_init(vm, &callbacks, pci, io_ports);
 
     err = vswitch_init(&virtio_vswitch);
@@ -130,15 +131,13 @@ void make_virtqueue_virtio_net(vm_t *vm, void *cookie)
         struct vswitch_mapping mac_mapping = vswitch_layout[i];
         struct ether_addr guest_macaddr;
         struct ether_addr *res = ether_aton_r(mac_mapping.mac_addr, &guest_macaddr);
-        virtqueue_driver_t *vq_send;
-        virtqueue_device_t *vq_recv;
         seL4_CPtr recv_notif;
         seL4_CPtr recv_badge;
-        vq_recv = malloc(sizeof(*vq_recv));
+        virtqueue_device_t *vq_recv = malloc(sizeof(*vq_recv));
         if (!vq_recv) {
             ZF_LOGF("Unable to initialise recv virtqueue for MAC address: %s", mac_mapping.mac_addr);
         }
-        vq_send = malloc(sizeof(*vq_send));
+        virtqueue_driver_t *vq_send = malloc(sizeof(*vq_send));
         if (!vq_send) {
             ZF_LOGF("Unable to initialise send virtqueue for MAC address: %s", mac_mapping.mac_addr);
         }
