@@ -82,7 +82,7 @@ static void virtio_net_notify_free_send(vswitch_node_t *node)
     }
 }
 
-static int virtio_net_notify_recv(vswitch_node_t *node)
+static void virtio_net_notify_recv(vswitch_node_t *node)
 {
     int err;
     void *buf = NULL;
