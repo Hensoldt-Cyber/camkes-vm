@@ -46,41 +46,43 @@ static int tx_virtqueue_forward(char *eth_buffer, size_t length, virtio_net_t *v
              */
             continue;
         }
-
-        if (camkes_virtqueue_driver_scatter_send_buffer(destnode->virtqueues.send_queue, (void *)eth_buffer, length) < 0) {
+        virtqueue_driver_t *vq = destnode->virtqueues.send_queue;
+        if (camkes_virtqueue_driver_scatter_send_buffer(vq, (void *)eth_buffer, length) < 0) {
             ZF_LOGE("Unknown error while enqueuing available buffer for dest "
                     PR_MAC802_ADDR ".",
                     PR_MAC802_ADDR_ARGS(&(destnode->addr)));
             continue;
         }
-        destnode->virtqueues.send_queue->notify();
+        vq->notify();
     }
     return 0;
 }
 
 static void virtio_net_notify_free_send(vswitch_node_t *node)
 {
+    virtqueue_driver_t *vq = node->virtqueues.send_queue;
     void *buf = NULL;
     unsigned int buf_size = 0;
     uint32_t wr_len = 0;
     vq_flags_t flag;
     virtqueue_ring_object_t handle;
-    while (virtqueue_get_used_buf(node->virtqueues.send_queue, &handle, &wr_len)) {
-        while (camkes_virtqueue_driver_gather_buffer(node->virtqueues.send_queue, &handle, &buf, &buf_size, &flag) >= 0) {
+    while (virtqueue_get_used_buf(vq, &handle, &wr_len)) {
+        while (camkes_virtqueue_driver_gather_buffer(vq, &handle, &buf, &buf_size, &flag) >= 0) {
             /* Clean up and free the buffer we allocated */
-            camkes_virtqueue_buffer_free(node->virtqueues.send_queue, buf);
+            camkes_virtqueue_buffer_free(vq, buf);
         }
     }
 }
 
 static void virtio_net_notify_recv(vswitch_node_t *node)
 {
+    virtqueue_device_t *vq = node->virtqueues.recv_queue;
     virtqueue_ring_object_t handle;
 
-    while (virtqueue_get_available_buf(node->virtqueues.recv_queue, &handle)) {
+    while (virtqueue_get_available_buf(vq, &handle)) {
         char emul_buf[MAX_MTU] = {0};
-        size_t len = virtqueue_scattered_available_size(node->virtqueues.recv_queue, &handle);
-        if (camkes_virtqueue_device_gather_copy_buffer(node->virtqueues.recv_queue, &handle, (void *)emul_buf, len) < 0) {
+        size_t len = virtqueue_scattered_available_size(vq, &handle);
+        if (camkes_virtqueue_device_gather_copy_buffer(vq, &handle, (void *)emul_buf, len) < 0) {
             ZF_LOGW("Dropping frame for " PR_MAC802_ADDR ": Can't gather vq buffer.",
                     PR_MAC802_ADDR_ARGS(&(node->addr)));
             continue;
@@ -90,18 +92,21 @@ static void virtio_net_notify_recv(vswitch_node_t *node)
         if (err) {
             ZF_LOGE("Unable to forward received buffer to the guest");
         }
-        node->virtqueues.recv_queue->notify();
+        vq->notify();
     }
 }
 
 static int virtio_net_notify(vm_t *vmm, void *cookie)
 {
     for (int i = 0; i < VSWITCH_NUM_NODES; i++) {
-        if (virtio_vswitch.nodes[i].virtqueues.recv_queue && VQ_DEV_POLL(virtio_vswitch.nodes[i].virtqueues.recv_queue)) {
-            virtio_net_notify_recv(&virtio_vswitch.nodes[i]);
+        vswitch_node_t *node = &virtio_vswitch.nodes[i];
+        virtqueue_device_t *vq_rx = node->virtqueues.recv_queue;
+        if (vq_rx && VQ_DEV_POLL(vq_rx)) {
+            virtio_net_notify_recv(node);
         }
-        if (virtio_vswitch.nodes[i].virtqueues.send_queue && VQ_DRV_POLL(virtio_vswitch.nodes[i].virtqueues.send_queue)) {
-            virtio_net_notify_free_send(&virtio_vswitch.nodes[i]);
+        virtqueue_driver_t *vq_tx = node->virtqueues.send_queue;
+        if (vq_tx && VQ_DRV_POLL(vq_tx)) {
+            virtio_net_notify_free_send(node);
         }
     }
     return 0;
