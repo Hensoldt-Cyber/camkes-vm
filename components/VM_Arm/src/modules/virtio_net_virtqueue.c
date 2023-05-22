@@ -77,23 +77,62 @@ static void virtio_net_notify_free_send(vswitch_node_t *node)
 static void virtio_net_notify_recv(vswitch_node_t *node)
 {
     virtqueue_device_t *vq = node->virtqueues.recv_queue;
-    virtqueue_ring_object_t handle;
 
-    while (virtqueue_get_available_buf(vq, &handle)) {
-        char emul_buf[MAX_MTU] = {0};
+    /* Since this is not thread-safe, it's fine to have just one temp buffer
+     * here that receives the data from the queue and it then passed to the
+     * sender. We expect to see only standard ethernet frames and discard
+     * anything else, e.g. jumbo frames.
+     */
+    static char buf[MAX_MTU];
+
+    for (;;) {
+        int err;
+        virtqueue_ring_object_t handle;
+        if (!virtqueue_get_available_buf(vq, &handle)) {
+            return;
+        }
+
+        /* We have a handle, so there is one or more buffer attached that are
+         * supposed to contain an ethernet frame.
+         */
         size_t len = virtqueue_scattered_available_size(vq, &handle);
-        if (camkes_virtqueue_device_gather_copy_buffer(vq, &handle, (void *)emul_buf, len) < 0) {
+        /* Currently we support normal ethernet frames only, but no jumbo
+         * frames. Getting a length of zero can happen when no data is left
+         * in the queue, because we already processed it earlier. The driver
+         * is not supposed to put zero-length packets in the queue.
+         */
+        if (len > sizeof(buf)) {
+            ZF_LOGW("Dropping unsupported large frame (%zu > %zu)", len, sizeof(buf));
+            /* Discard frame, len is set to 0 because we don't have any payload
+             * data for the driver, it should just release the buffers.
+             */
+            if (!virtqueue_add_used_buf(vq, &handle, 0)) {
+                /* This is not supposed to happen, and there is nothing we can
+                 * do in this case.
+                 */
+                ZF_LOGW("Could not release queue buffer");
+            }
+            continue;
+        }
+
+        /* It's save to call this even when len is zero */
+        if (camkes_virtqueue_device_gather_copy_buffer(vq, &handle, buf, len)) {
             ZF_LOGW("Dropping frame for " PR_MAC802_ADDR ": Can't gather vq buffer.",
                     PR_MAC802_ADDR_ARGS(&(node->addr)));
             continue;
         }
 
-        int err = virtio_net_rx(emul_buf, len, virtio_net);
+        /* It's save to call this even when len is zero */
+        err = virtio_net_rx(buf, len, virtio_net);
         if (err) {
-            ZF_LOGE("Unable to forward received buffer to the guest");
+            ZF_LOGE("Unable to forward received buffer to the guest, (%d)", err);
         }
-        vq->notify();
     }
+
+    /* We always raise a notification, even is we discarded frames or received
+     * zero-length frames.
+     */
+    vq->notify();
 }
 
 static int virtio_net_notify(vm_t *vmm, void *cookie)
