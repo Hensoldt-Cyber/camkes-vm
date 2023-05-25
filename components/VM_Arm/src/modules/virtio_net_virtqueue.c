@@ -38,13 +38,8 @@ void self_mac(uint8_t *mac)
 
 static int tx_virtqueue_forward(char *eth_buffer, size_t length, virtio_net_t *virtio_net)
 {
-    int destnode_start_idx, destnode_n_idxs;
-
-    destnode_n_idxs = virtio_vswitch.n_connected;
-    destnode_start_idx = 0;
-    for (int i = destnode_start_idx; i < destnode_start_idx + destnode_n_idxs; i++) {
-        vswitch_node_t *destnode;
-        destnode = vswitch_get_destnode_by_index(&virtio_vswitch, i);
+    for (int i = 0; i < virtio_vswitch.n_connected; i++) {
+        vswitch_node_t *destnode = vswitch_get_destnode_by_index(&virtio_vswitch, i);
         if (destnode == NULL) {
             /* This could happen in the broadcast case if there are holes in
              * the array, though that would still be odd.
@@ -126,8 +121,7 @@ void make_virtqueue_virtio_net(vm_t *vm, void *cookie)
         ZF_LOGF("Unable to initialise vswitch library");
     }
 
-    int num_vswitch_entries = ARRAY_SIZE(vswitch_layout);
-    for (int i = 0; i < num_vswitch_entries; i++) {
+    for (int i = 0; i < ARRAY_SIZE(vswitch_layout); i++) {
         struct vswitch_mapping mac_mapping = vswitch_layout[i];
         struct ether_addr guest_macaddr;
         struct ether_addr *res = ether_aton_r(mac_mapping.mac_addr, &guest_macaddr);
