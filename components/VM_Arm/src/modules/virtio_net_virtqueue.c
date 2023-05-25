@@ -38,7 +38,7 @@ void self_mac(uint8_t *mac)
 
 static int tx_virtqueue_forward(char *eth_buffer, size_t length, virtio_net_t *virtio_net)
 {
-    int err, destnode_start_idx, destnode_n_idxs;
+    int destnode_start_idx, destnode_n_idxs;
 
     destnode_n_idxs = virtio_vswitch.n_connected;
     destnode_start_idx = 0;
@@ -80,16 +80,11 @@ static void virtio_net_notify_free_send(vswitch_node_t *node)
 
 static void virtio_net_notify_recv(vswitch_node_t *node)
 {
-    int err;
-    void *buf = NULL;
-    size_t buf_size = 0;
-    vq_flags_t flag;
     virtqueue_ring_object_t handle;
 
     while (virtqueue_get_available_buf(node->virtqueues.recv_queue, &handle)) {
         char emul_buf[MAX_MTU] = {0};
         size_t len = virtqueue_scattered_available_size(node->virtqueues.recv_queue, &handle);
-        int enqueue_res = 0;
         if (camkes_virtqueue_device_gather_copy_buffer(node->virtqueues.recv_queue, &handle, (void *)emul_buf, len) < 0) {
             ZF_LOGW("Dropping frame for " PR_MAC802_ADDR ": Can't gather vq buffer.",
                     PR_MAC802_ADDR_ARGS(&(node->addr)));
