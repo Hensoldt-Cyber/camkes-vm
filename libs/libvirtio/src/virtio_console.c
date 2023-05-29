@@ -31,7 +31,7 @@ static void console_handle_irq(void *cookie)
 {
     virtio_con_cookie_t *virtio_cookie = (virtio_con_cookie_t *)cookie;
     if (!virtio_cookie || !virtio_cookie->vm) {
-        ZF_LOGE("NULL virtio cookie given to raw irq handler");
+        ZF_LOGE("invalid cookie given to raw irq handler");
         return;
     }
     int err = vm_inject_irq(virtio_cookie->vm->vcpus[BOOT_VCPU], VIRTIO_CON_PLAT_INTERRUPT_LINE);
