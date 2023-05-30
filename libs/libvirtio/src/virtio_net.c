@@ -103,7 +103,10 @@ static void emul_low_level_init(struct eth_driver *driver, uint8_t *mac, int *mt
     *mtu = MAX_MTU_DATA;
 }
 
-static void virtio_net_ack(vm_vcpu_t *vcpu, int irq, void *token) {}
+static void virtio_net_ack(vm_vcpu_t *vcpu, int irq, void *token)
+{
+    /* nothing to be done */
+}
 
 virtio_net_t *virtio_net_init(vm_t *vm, virtio_net_callbacks_t *callbacks,
                               vmm_pci_space_t *pci, vmm_io_port_list_t *io_ports)
