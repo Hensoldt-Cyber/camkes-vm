@@ -63,11 +63,18 @@ virtio_con_t *virtio_console_init(vm_t *vm, console_putchar_fn_t putchar,
     ioport_range_t virtio_port_range = {0, 0, VIRTIO_IOPORT_SIZE};
     virtio_con = common_make_virtio_con(vm, pci, io_ports, virtio_port_range, IOPORT_FREE,
                                         VIRTIO_INTERRUPT_PIN, VIRTIO_CON_PLAT_INTERRUPT_LINE, backend);
+    if (!virtio_con) {
+        ZF_LOGE("Failed to initialise virtio con driver");
+        free(virtio_con);
+        return NULL;
+    }
+
     console_cookie->virtio_con = virtio_con;
     console_cookie->vm = vm;
     err = vm_register_irq(vm->vcpus[BOOT_VCPU], VIRTIO_CON_PLAT_INTERRUPT_LINE, &virtio_console_ack, NULL);
     if (err) {
         ZF_LOGE("Failed to register console irq");
+        /* ToDo: free virtio_con? */
         free(console_cookie);
         return NULL;
     }

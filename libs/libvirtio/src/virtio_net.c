@@ -135,6 +135,13 @@ virtio_net_t *virtio_net_init(vm_t *vm, virtio_net_callbacks_t *callbacks,
     driver_cookie->virtio_net = virtio_net;
     driver_cookie->vm = vm;
     int err = vm_register_irq(vm->vcpus[BOOT_VCPU], VIRTIO_NET_PLAT_INTERRUPT_LINE, &virtio_net_ack, NULL);
+    if (err) {
+        ZF_LOGE("Failed to register net irq");
+        /* ToDo: free virtio_net? */
+        free(driver_cookie);
+        return NULL;
+    }
+
     if (callbacks) {
         driver_cookie->callbacks.tx_callback = callbacks->tx_callback;
         driver_cookie->callbacks.irq_callback = callbacks->irq_callback;
