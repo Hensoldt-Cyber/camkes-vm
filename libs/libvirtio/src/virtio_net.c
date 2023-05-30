@@ -44,7 +44,7 @@ static void emul_raw_handle_irq(struct eth_driver *driver, int irq)
     }
     int err = vm_inject_irq(virtio_cookie->vm->vcpus[BOOT_VCPU], VIRTIO_NET_PLAT_INTERRUPT_LINE);
     if (err) {
-        ZF_LOGE("Failed to inject irq");
+        ZF_LOGE("Failed to inject irq (%d)", err);
         return;
     }
     if (virtio_cookie->callbacks.irq_callback) {

@@ -39,7 +39,7 @@ static void console_handle_irq(void *cookie)
     }
     int err = vm_inject_irq(virtio_cookie->vm->vcpus[BOOT_VCPU], VIRTIO_CON_PLAT_INTERRUPT_LINE);
     if (err) {
-        ZF_LOGE("Failed to inject irq");
+        ZF_LOGE("Failed to inject irq (%d)", err);
         return;
     }
 }
@@ -54,7 +54,7 @@ virtio_con_t *virtio_console_init(vm_t *vm, console_putchar_fn_t putchar,
 
     err = vm_register_irq(vm->vcpus[BOOT_VCPU], VIRTIO_CON_PLAT_INTERRUPT_LINE, &virtio_console_ack, NULL);
     if (err) {
-        ZF_LOGE("Failed to register console irq");
+        ZF_LOGE("Failed to register console irq (%d)", err);
         return NULL;
     }
     /* There is no way to unregister an IRQ, so there is not recovery when
