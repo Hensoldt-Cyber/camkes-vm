@@ -58,6 +58,7 @@ virtio_con_t *virtio_console_init(vm_t *vm, console_putchar_fn_t putchar,
         ZF_LOGE("Failed to allocated virtio console cookie");
         return NULL;
     }
+    console_cookie->vm = vm;
 
     backend.console_data = (void *)console_cookie;
     ioport_range_t virtio_port_range = {0, 0, VIRTIO_IOPORT_SIZE};
@@ -70,7 +71,7 @@ virtio_con_t *virtio_console_init(vm_t *vm, console_putchar_fn_t putchar,
     }
 
     console_cookie->virtio_con = virtio_con;
-    console_cookie->vm = vm;
+
     err = vm_register_irq(vm->vcpus[BOOT_VCPU], VIRTIO_CON_PLAT_INTERRUPT_LINE, &virtio_console_ack, NULL);
     if (err) {
         ZF_LOGE("Failed to register console irq");
@@ -78,5 +79,6 @@ virtio_con_t *virtio_console_init(vm_t *vm, console_putchar_fn_t putchar,
         free(console_cookie);
         return NULL;
     }
+
     return virtio_con;
 }
