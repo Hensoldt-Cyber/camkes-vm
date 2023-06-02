@@ -52,6 +52,15 @@ virtio_con_t *virtio_console_init(vm_t *vm, console_putchar_fn_t putchar,
     virtio_con_cookie_t *console_cookie;
     virtio_con_t *virtio_con;
 
+    err = vm_register_irq(vm->vcpus[BOOT_VCPU], VIRTIO_CON_PLAT_INTERRUPT_LINE, &virtio_console_ack, NULL);
+    if (err) {
+        ZF_LOGE("Failed to register console irq");
+        return NULL;
+    }
+    /* There is no way to unregister an IRQ, so there is not recovery when
+     * anything below fails
+     */
+
     backend.handleIRQ = console_handle_irq;
     backend.backend_putchar = putchar;
 
@@ -73,14 +82,6 @@ virtio_con_t *virtio_console_init(vm_t *vm, console_putchar_fn_t putchar,
     }
 
     console_cookie->virtio_con = virtio_con;
-
-    err = vm_register_irq(vm->vcpus[BOOT_VCPU], VIRTIO_CON_PLAT_INTERRUPT_LINE, &virtio_console_ack, NULL);
-    if (err) {
-        ZF_LOGE("Failed to register console irq");
-        /* ToDo: free virtio_con? */
-        free(console_cookie);
-        return NULL;
-    }
 
     return virtio_con;
 }

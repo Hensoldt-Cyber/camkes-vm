@@ -114,6 +114,15 @@ virtio_net_t *virtio_net_init(vm_t *vm, virtio_net_callbacks_t *callbacks,
     virtio_net_cookie_t *driver_cookie;
     virtio_net_t *virtio_net;
 
+    int err = vm_register_irq(vm->vcpus[BOOT_VCPU], VIRTIO_NET_PLAT_INTERRUPT_LINE, &virtio_net_ack, NULL);
+    if (err) {
+        ZF_LOGE("Failed to register net irq (%d)", err);
+        return NULL;
+    }
+    /* There is no way to unregister an IRQ, so there is not recovery when
+     * anything below fails
+     */
+
     get_mac_addr_callback = callbacks->get_mac_addr_callback;
 
     struct raw_iface_funcs backend = virtio_net_default_backend();
@@ -142,14 +151,6 @@ virtio_net_t *virtio_net_init(vm_t *vm, virtio_net_callbacks_t *callbacks,
     }
     virtio_net->emul_driver->eth_data = (void *)driver_cookie;
     driver_cookie->virtio_net = virtio_net;
-
-    int err = vm_register_irq(vm->vcpus[BOOT_VCPU], VIRTIO_NET_PLAT_INTERRUPT_LINE, &virtio_net_ack, NULL);
-    if (err) {
-        ZF_LOGE("Failed to register net irq");
-        /* ToDo: free virtio_net? */
-        free(driver_cookie);
-        return NULL;
-    }
 
     return virtio_net;
 }
