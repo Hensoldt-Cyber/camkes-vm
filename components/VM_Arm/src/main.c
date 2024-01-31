@@ -584,6 +584,55 @@ static int vmm_init(const vm_config_t *vm_config)
     return 0;
 }
 
+static int vm_init_iommu(vm_t *vm)
+{
+
+#if defined(CONFIG_ARM_SMMU)
+
+    int err;
+    /* configure the smmu */
+    ZF_LOGD("Getting sid and cb caps");
+    seL4_CPtr cb_cap = camkes_get_smmu_cb_cap();
+    seL4_CPtr sid_cap = camkes_get_smmu_sid_cap();
+
+    ZF_LOGD("Assigning vspace to context bank");
+    err = seL4_ARM_CB_AssignVspace(cb_cap, vspace_get_root(&vm->mem.vm_vspace));
+    if (err) {
+        ZF_LOGE("Failed to assign vspace to CB (%d)");
+        return -1;
+    }
+
+    ZF_LOGD("Binding stream id to context bank");
+    err = seL4_ARM_SID_BindCB(sid_cap, cb_cap);
+    if (err) {
+        ZF_LOGE("Failed to bind CB to SID (%d)");
+        return -1;
+    }
+
+#elif defined(CONFIG_TK1_SMMU)
+
+    int err;
+    /* install any iospaces */
+    int iospace_caps;
+    err = simple_get_iospace_cap_count(&_simple, &iospace_caps);
+    if (err) {
+        ZF_LOGE("Failed to get iospace count (%d)");
+        return -1;
+    }
+    for (int i = 0; i < iospace_caps; i++) {
+        seL4_CPtr iospace = simple_get_nth_iospace_cap(&_simple, i);
+        err = vm_guest_add_iospace(&vm, &_vspace, iospace);
+        if (err) {
+            ZF_LOGE("Failed to add iospace (%d)");
+            return -1;
+        }
+    }
+
+#endif /* platform specific IOMMU init */
+
+    return 0;
+}
+
 void restart_component(void)
 {
     longjmp(restart_jmp_buf, 1);
@@ -764,6 +813,43 @@ static int route_irqs(vm_vcpu_t *vcpu, irq_server_t *irq_server)
             }
         }
     }
+    return 0;
+}
+
+static int vm_create_vcpus(vm_t *vm, const vm_config_t *vm_config,
+                           irq_server_t *irq_server)
+{
+    int err;
+
+    ZF_LOGI("Creating %d vCPUs", NUM_VCPUS);
+
+    /* Create CPUs and DTB node */
+    for (int i = 0; i < NUM_VCPUS; i++) {
+        vm_vcpu_t *vcpu = create_vmm_plat_vcpu(vm, VM_PRIO - 1);
+        if (!vcpu) {
+            ZF_LOGE("Failed to create VCPU %d", i);
+            return -1;
+        }
+    }
+
+    vm_vcpu_t *vcpu_boot = vm->vcpus[BOOT_VCPU];
+    if (!vcpu_boot) {
+        ZF_LOGE("BOOT_VCPU (%d) is not set up", BOOT_VCPU);
+        return -1;
+    }
+
+    err = vm_assign_vcpu_target(vcpu_boot, 0);
+    if (err) {
+        ZF_LOGE("Failed to assign boot vcpu (%d)", err);
+        return -1;
+    }
+
+    err = route_irqs(vcpu_boot, irq_server);
+    if (err) {
+        ZF_LOGE("Failed route IRQs to boot vcpu (%d)", err);
+        return -1;
+    }
+
     return 0;
 }
 
@@ -1219,35 +1305,11 @@ static int main_continued(void)
     vm.mem.clean_cache = vm_config.clean_cache;
     vm.mem.map_one_to_one = vm_config.map_one_to_one; /* Map memory 1:1 if configured to do so */
 
-#ifdef CONFIG_TK1_SMMU
-    /* install any iospaces */
-    int iospace_caps;
-    err = simple_get_iospace_cap_count(&_simple, &iospace_caps);
+    err = vm_init_iommu(&vm);
     if (err) {
-        ZF_LOGF("Failed to get iospace count");
+        ZF_LOGE("Failed to initialise IO-MMU (%d)", err);
+        return -1;
     }
-    for (int i = 0; i < iospace_caps; i++) {
-        seL4_CPtr iospace = simple_get_nth_iospace_cap(&_simple, i);
-        err = vm_guest_add_iospace(&vm, &_vspace, iospace);
-        if (err) {
-            ZF_LOGF("Failed to add iospace");
-        }
-    }
-#endif /* CONFIG_TK1_SMMU */
-#ifdef CONFIG_ARM_SMMU
-    /* configure the smmu */
-    ZF_LOGD("Getting sid and cb caps");
-    seL4_CPtr cb_cap = camkes_get_smmu_cb_cap();
-    seL4_CPtr sid_cap = camkes_get_smmu_sid_cap();
-
-    ZF_LOGD("Assigning vspace to context bank");
-    err = seL4_ARM_CB_AssignVspace(cb_cap, vspace_get_root(&vm.mem.vm_vspace));
-    ZF_LOGF_IF(err, "Failed to assign vspace to CB");
-
-    ZF_LOGD("Binding stream id to context bank");
-    err = seL4_ARM_SID_BindCB(sid_cap, cb_cap);
-    ZF_LOGF_IF(err, "Failed to bind CB to SID");
-#endif /* CONFIG_ARM_SMMU */
 
     err = vm_create_default_irq_controller(&vm);
     assert(!err);
@@ -1257,28 +1319,9 @@ static int main_continued(void)
     assert(!err);
 #endif
 
-    /* Create CPUs and DTB node */
-    for (int i = 0; i < NUM_VCPUS; i++) {
-        vm_vcpu_t *new_vcpu = create_vmm_plat_vcpu(&vm, VM_PRIO - 1);
-        assert(new_vcpu);
-    }
-    if (vm_config.generate_dtb) {
-        err = fdt_generate_plat_vcpu_node(&vm, gen_dtb_buf);
-        if (err) {
-            ZF_LOGE("Couldn't generate plat_vcpu_node (%d)", err);
-            return -1;
-        }
-    }
-
-    vm_vcpu_t *vm_vcpu = vm.vcpus[BOOT_VCPU];
-    err = vm_assign_vcpu_target(vm_vcpu, 0);
+    err = vm_create_vcpus(&vm, &vm_config, _irq_server);
     if (err) {
-        return -1;
-    }
-
-    /* Route IRQs */
-    err = route_irqs(vm_vcpu, _irq_server);
-    if (err) {
+        ZF_LOGE("Error: Failed to create VCPUs (%d)", err);
         return -1;
     }
 
@@ -1298,7 +1341,7 @@ static int main_continued(void)
         return -1;
     }
 
-    err = vcpu_start(vm_vcpu);
+    err = vcpu_start(vm.vcpus[BOOT_VCPU]);
     if (err) {
         ZF_LOGE("Failed to start Boot VCPU");
         return -1;
