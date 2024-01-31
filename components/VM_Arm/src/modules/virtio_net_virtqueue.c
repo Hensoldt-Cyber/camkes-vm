@@ -38,66 +38,53 @@ void self_mac(uint8_t *mac)
 
 static int tx_virtqueue_forward(char *eth_buffer, size_t length, virtio_net_t *virtio_net)
 {
-    struct ether_addr *destaddr;
-    int err, destnode_start_idx, destnode_n_idxs;
-
-    /* The dest MAC addr is the first member of an ethernet frame. */
-    destaddr = (struct ether_addr *)eth_buffer;
-
-    destnode_n_idxs = virtio_vswitch.n_connected;
-    destnode_start_idx = 0;
-    for (int i = destnode_start_idx; i < destnode_start_idx + destnode_n_idxs; i++) {
-        vswitch_node_t *destnode;
-        destnode = vswitch_get_destnode_by_index(&virtio_vswitch, i);
+    for (int i = 0; i < virtio_vswitch.n_connected; i++) {
+        vswitch_node_t *destnode = vswitch_get_destnode_by_index(&virtio_vswitch, i);
         if (destnode == NULL) {
             /* This could happen in the broadcast case if there are holes in
              * the array, though that would still be odd.
              */
             continue;
         }
-
-        if (camkes_virtqueue_driver_scatter_send_buffer(destnode->virtqueues.send_queue, (void *)eth_buffer, length) < 0) {
+        virtqueue_driver_t *vq = destnode->virtqueues.send_queue;
+        if (camkes_virtqueue_driver_scatter_send_buffer(vq, (void *)eth_buffer, length) < 0) {
             ZF_LOGE("Unknown error while enqueuing available buffer for dest "
                     PR_MAC802_ADDR ".",
-                    PR_MAC802_ADDR_ARGS(destaddr));
+                    PR_MAC802_ADDR_ARGS(&(destnode->addr)));
             continue;
         }
-        destnode->virtqueues.send_queue->notify();
+        vq->notify();
     }
     return 0;
 }
 
 static void virtio_net_notify_free_send(vswitch_node_t *node)
 {
+    virtqueue_driver_t *vq = node->virtqueues.send_queue;
     void *buf = NULL;
     unsigned int buf_size = 0;
     uint32_t wr_len = 0;
     vq_flags_t flag;
     virtqueue_ring_object_t handle;
-    while (virtqueue_get_used_buf(node->virtqueues.send_queue, &handle, &wr_len)) {
-        while (camkes_virtqueue_driver_gather_buffer(node->virtqueues.send_queue, &handle, &buf, &buf_size, &flag) >= 0) {
+    while (virtqueue_get_used_buf(vq, &handle, &wr_len)) {
+        while (camkes_virtqueue_driver_gather_buffer(vq, &handle, &buf, &buf_size, &flag) >= 0) {
             /* Clean up and free the buffer we allocated */
-            camkes_virtqueue_buffer_free(node->virtqueues.send_queue, buf);
+            camkes_virtqueue_buffer_free(vq, buf);
         }
     }
 }
 
-static int virtio_net_notify_recv(vswitch_node_t *node)
+static void virtio_net_notify_recv(vswitch_node_t *node)
 {
-    int err;
-    struct ether_addr myaddr;
-    void *buf = NULL;
-    size_t buf_size = 0;
-    vq_flags_t flag;
+    virtqueue_device_t *vq = node->virtqueues.recv_queue;
     virtqueue_ring_object_t handle;
 
-    while (virtqueue_get_available_buf(node->virtqueues.recv_queue, &handle)) {
+    while (virtqueue_get_available_buf(vq, &handle)) {
         char emul_buf[MAX_MTU] = {0};
-        size_t len = virtqueue_scattered_available_size(node->virtqueues.recv_queue, &handle);
-        int enqueue_res = 0;
-        if (camkes_virtqueue_device_gather_copy_buffer(node->virtqueues.recv_queue, &handle, (void *)emul_buf, len) < 0) {
+        size_t len = virtqueue_scattered_available_size(vq, &handle);
+        if (camkes_virtqueue_device_gather_copy_buffer(vq, &handle, (void *)emul_buf, len) < 0) {
             ZF_LOGW("Dropping frame for " PR_MAC802_ADDR ": Can't gather vq buffer.",
-                    PR_MAC802_ADDR_ARGS(&myaddr));
+                    PR_MAC802_ADDR_ARGS(&(node->addr)));
             continue;
         }
 
@@ -105,18 +92,21 @@ static int virtio_net_notify_recv(vswitch_node_t *node)
         if (err) {
             ZF_LOGE("Unable to forward received buffer to the guest");
         }
-        node->virtqueues.recv_queue->notify();
+        vq->notify();
     }
 }
 
 static int virtio_net_notify(vm_t *vmm, void *cookie)
 {
     for (int i = 0; i < VSWITCH_NUM_NODES; i++) {
-        if (virtio_vswitch.nodes[i].virtqueues.recv_queue && VQ_DEV_POLL(virtio_vswitch.nodes[i].virtqueues.recv_queue)) {
-            virtio_net_notify_recv(&virtio_vswitch.nodes[i]);
+        vswitch_node_t *node = &virtio_vswitch.nodes[i];
+        virtqueue_device_t *vq_rx = node->virtqueues.recv_queue;
+        if (vq_rx && VQ_DEV_POLL(vq_rx)) {
+            virtio_net_notify_recv(node);
         }
-        if (virtio_vswitch.nodes[i].virtqueues.send_queue && VQ_DRV_POLL(virtio_vswitch.nodes[i].virtqueues.send_queue)) {
-            virtio_net_notify_free_send(&virtio_vswitch.nodes[i]);
+        virtqueue_driver_t *vq_tx = node->virtqueues.send_queue;
+        if (vq_tx && VQ_DRV_POLL(vq_tx)) {
+            virtio_net_notify_free_send(node);
         }
     }
     return 0;
@@ -136,8 +126,7 @@ void make_virtqueue_virtio_net(vm_t *vm, void *cookie)
         ZF_LOGF("Unable to initialise vswitch library");
     }
 
-    int num_vswitch_entries = ARRAY_SIZE(vswitch_layout);
-    for (int i = 0; i < num_vswitch_entries; i++) {
+    for (int i = 0; i < ARRAY_SIZE(vswitch_layout); i++) {
         struct vswitch_mapping mac_mapping = vswitch_layout[i];
         struct ether_addr guest_macaddr;
         struct ether_addr *res = ether_aton_r(mac_mapping.mac_addr, &guest_macaddr);
