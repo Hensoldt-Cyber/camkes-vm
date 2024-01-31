@@ -44,7 +44,7 @@ static void emul_raw_handle_irq(struct eth_driver *driver, int irq)
     }
     int err = vm_inject_irq(virtio_cookie->vm->vcpus[BOOT_VCPU], VIRTIO_NET_PLAT_INTERRUPT_LINE);
     if (err) {
-        ZF_LOGE("Failed to inject irq");
+        ZF_LOGE("Failed to inject irq (%d)", err);
         return;
     }
     if (virtio_cookie->callbacks.irq_callback) {
@@ -103,13 +103,25 @@ static void emul_low_level_init(struct eth_driver *driver, uint8_t *mac, int *mt
     *mtu = MAX_MTU_DATA;
 }
 
-static void virtio_net_ack(vm_vcpu_t *vcpu, int irq, void *token) {}
+static void virtio_net_ack(vm_vcpu_t *vcpu, int irq, void *token)
+{
+    /* nothing to be done */
+}
 
 virtio_net_t *virtio_net_init(vm_t *vm, virtio_net_callbacks_t *callbacks,
                               vmm_pci_space_t *pci, vmm_io_port_list_t *io_ports)
 {
     virtio_net_cookie_t *driver_cookie;
     virtio_net_t *virtio_net;
+
+    int err = vm_register_irq(vm->vcpus[BOOT_VCPU], VIRTIO_NET_PLAT_INTERRUPT_LINE, &virtio_net_ack, NULL);
+    if (err) {
+        ZF_LOGE("Failed to register net irq (%d)", err);
+        return NULL;
+    }
+    /* There is no way to unregister an IRQ, so there is not recovery when
+     * anything below fails
+     */
 
     get_mac_addr_callback = callbacks->get_mac_addr_callback;
 
@@ -123,6 +135,11 @@ virtio_net_t *virtio_net_init(vm_t *vm, virtio_net_callbacks_t *callbacks,
         ZF_LOGE("Failed to allocated virtio iface cookie");
         return NULL;
     }
+    driver_cookie->vm = vm;
+    if (callbacks) {
+        driver_cookie->callbacks.tx_callback = callbacks->tx_callback;
+        driver_cookie->callbacks.irq_callback = callbacks->irq_callback;
+    }
 
     ioport_range_t virtio_port_range = {0, 0, VIRTIO_IOPORT_SIZE};
     virtio_net = common_make_virtio_net(vm, pci, io_ports, virtio_port_range, IOPORT_FREE,
@@ -132,13 +149,8 @@ virtio_net_t *virtio_net_init(vm_t *vm, virtio_net_callbacks_t *callbacks,
         free(driver_cookie);
         return NULL;
     }
-    driver_cookie->virtio_net = virtio_net;
-    driver_cookie->vm = vm;
-    int err =  vm_register_irq(vm->vcpus[BOOT_VCPU], VIRTIO_NET_PLAT_INTERRUPT_LINE, &virtio_net_ack, NULL);
-    if (callbacks) {
-        driver_cookie->callbacks.tx_callback = callbacks->tx_callback;
-        driver_cookie->callbacks.irq_callback = callbacks->irq_callback;
-    }
     virtio_net->emul_driver->eth_data = (void *)driver_cookie;
+    driver_cookie->virtio_net = virtio_net;
+
     return virtio_net;
 }

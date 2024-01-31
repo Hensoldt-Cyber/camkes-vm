@@ -25,18 +25,21 @@ typedef struct virtio_con_cookie {
     vm_t *vm;
 } virtio_con_cookie_t;
 
-static void virtio_console_ack(vm_vcpu_t *vcpu, int irq, void *token) {}
+static void virtio_console_ack(vm_vcpu_t *vcpu, int irq, void *token)
+{
+    /* nothing to be done */
+}
 
 static void console_handle_irq(void *cookie)
 {
     virtio_con_cookie_t *virtio_cookie = (virtio_con_cookie_t *)cookie;
     if (!virtio_cookie || !virtio_cookie->vm) {
-        ZF_LOGE("NULL virtio cookie given to raw irq handler");
+        ZF_LOGE("invalid cookie given to raw irq handler");
         return;
     }
     int err = vm_inject_irq(virtio_cookie->vm->vcpus[BOOT_VCPU], VIRTIO_CON_PLAT_INTERRUPT_LINE);
     if (err) {
-        ZF_LOGE("Failed to inject irq");
+        ZF_LOGE("Failed to inject irq (%d)", err);
         return;
     }
 }
@@ -44,11 +47,19 @@ static void console_handle_irq(void *cookie)
 virtio_con_t *virtio_console_init(vm_t *vm, console_putchar_fn_t putchar,
                                   vmm_pci_space_t *pci, vmm_io_port_list_t *io_ports)
 {
-
     int err;
     struct virtio_console_passthrough backend;
     virtio_con_cookie_t *console_cookie;
     virtio_con_t *virtio_con;
+
+    err = vm_register_irq(vm->vcpus[BOOT_VCPU], VIRTIO_CON_PLAT_INTERRUPT_LINE, &virtio_console_ack, NULL);
+    if (err) {
+        ZF_LOGE("Failed to register console irq (%d)", err);
+        return NULL;
+    }
+    /* There is no way to unregister an IRQ, so there is not recovery when
+     * anything below fails
+     */
 
     backend.handleIRQ = console_handle_irq;
     backend.backend_putchar = putchar;
@@ -58,18 +69,19 @@ virtio_con_t *virtio_console_init(vm_t *vm, console_putchar_fn_t putchar,
         ZF_LOGE("Failed to allocated virtio console cookie");
         return NULL;
     }
+    console_cookie->vm = vm;
 
     backend.console_data = (void *)console_cookie;
     ioport_range_t virtio_port_range = {0, 0, VIRTIO_IOPORT_SIZE};
     virtio_con = common_make_virtio_con(vm, pci, io_ports, virtio_port_range, IOPORT_FREE,
                                         VIRTIO_INTERRUPT_PIN, VIRTIO_CON_PLAT_INTERRUPT_LINE, backend);
-    console_cookie->virtio_con = virtio_con;
-    console_cookie->vm = vm;
-    err =  vm_register_irq(vm->vcpus[BOOT_VCPU], VIRTIO_CON_PLAT_INTERRUPT_LINE, &virtio_console_ack, NULL);
-    if (err) {
-        ZF_LOGE("Failed to register console irq");
-        free(console_cookie);
+    if (!virtio_con) {
+        ZF_LOGE("Failed to initialise virtio con driver");
+        free(virtio_con);
         return NULL;
     }
+
+    console_cookie->virtio_con = virtio_con;
+
     return virtio_con;
 }

@@ -292,5 +292,5 @@ void make_virtio_net_vswitch(vm_t *vm, vmm_pci_space_t *pci, vmm_io_port_list_t 
 /* Dummy function used to register irq callback handlers. */
 void make_virtio_net_vswitch_driver_dummy(vm_t *vm, vmm_pci_space_t *pci, vmm_io_port_list_t *io_ports)
 {
-
+    /* nothing here, it's a dummy function */
 }
