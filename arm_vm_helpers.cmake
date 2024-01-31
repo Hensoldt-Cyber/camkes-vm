@@ -47,12 +47,20 @@ function(DeclareCAmkESARMVM init_component)
         ${ARM_VM_PROJECT_DIR}/components/VM_Arm/src/fdt_manipulation.c
         ${ARM_VM_PROJECT_DIR}/components/VM_Arm/src/crossvm.c
         ${ARM_VM_PROJECT_DIR}/components/VM_Arm/src/modules/map_frame_hack.c
-        ${ARM_VM_PROJECT_DIR}/components/VM_Arm/src/modules/init_ram.c
     )
+
+    if(KernelPlatformQEMUArmVirt)
+        list(APPEND vm_src ${ARM_VM_PROJECT_DIR}/components/VM_Arm/src/modules/vgicv2m.c)
+    endif()
 
     if(VmVirtUart)
         list(APPEND vm_src ${ARM_VM_PROJECT_DIR}/components/VM_Arm/src/modules/vuart_init.c)
     endif()
+
+    if(VmVirtUartPL011)
+        list(APPEND vm_src ${ARM_VM_PROJECT_DIR}/components/VM_Arm/src/modules/vpl011.c)
+    endif()
+
 
     if(Tk1DeviceFwd)
         list(

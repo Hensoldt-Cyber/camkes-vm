@@ -214,7 +214,7 @@ static void vsock_inject_irq(void *cookie)
 {
     virtio_vsock_cookie_t *virtio_cookie = (virtio_vsock_cookie_t *)cookie;
     if (!virtio_cookie || !virtio_cookie->vm) {
-        ZF_LOGE("NULL virtio cookie given to raw irq handler");
+        ZF_LOGE("invalid cookie given to raw irq handler");
         return;
     }
 

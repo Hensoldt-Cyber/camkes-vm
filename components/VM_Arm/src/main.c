@@ -85,10 +85,6 @@ int NUM_VCPUS = 1;
 
 #define DMA_VSTART  0x40000000
 
-#ifndef DEBUG_BUILD
-#define seL4_DebugHalt() do{ printf("Halting...\n"); while(1); } while(0)
-#endif
-
 vka_t _vka;
 simple_t _simple;
 vspace_t _vspace;
@@ -151,8 +147,8 @@ static int _dma_morecore(size_t min_size, int cached, struct dma_mem_descriptor 
 
     /* Create a frame */
     frame = vka_alloc_frame_leaky(vka, seL4_PageBits);
-    assert(frame);
     if (!frame) {
+        ZF_LOGE("Failed to allocate frame");
         return -1;
     }
 
@@ -163,19 +159,19 @@ static int _dma_morecore(size_t min_size, int cached, struct dma_mem_descriptor 
         /* Allocate a page table */
         pt = vka_alloc_page_table_leaky(vka);
         if (!pt) {
-            printf("Failed to create page table\n");
+            ZF_LOGE("Failed to create page table");
             return -1;
         }
         /* Map the page table */
         err = seL4_ARM_PageTable_Map(pt, pd, _vaddr, 0);
         if (err) {
-            printf("Failed to map page table\n");
+            ZF_LOGE("Failed to map page table (%d)", err);
             return -1;
         }
         /* Try to map the page again */
         err = seL4_ARM_Page_Map(frame, pd, _vaddr, seL4_AllRights, 0);
         if (err) {
-            printf("Failed to map page\n");
+            ZF_LOGE("Failed to map page (%d)", err);
             return -1;
         }
 
@@ -183,7 +179,10 @@ static int _dma_morecore(size_t min_size, int cached, struct dma_mem_descriptor 
 
     /* Find the physical address of the page */
     getaddr_ret = seL4_ARM_Page_GetAddress(frame);
-    assert(!getaddr_ret.error);
+    if (getaddr_ret.error) {
+        ZF_LOGE("Failed to get page address(%d)", getaddr_ret.error);
+        return -1;
+    }
     /* Setup dma memory description */
     dma_desc->vaddr = _vaddr;
     dma_desc->paddr = getaddr_ret.paddr;
@@ -205,6 +204,7 @@ typedef struct vm_io_cookie {
 static void *vm_map_paddr_with_page_size(vm_io_cookie_t *io_mapper, uintptr_t paddr, size_t size, int page_size_bits,
                                          int cached)
 {
+    assert(size > 0);
 
     vka_t *vka = &io_mapper->vka;
     vspace_t *vspace = &io_mapper->vspace;
@@ -218,6 +218,7 @@ static void *vm_map_paddr_with_page_size(vm_io_cookie_t *io_mapper, uintptr_t pa
 
     /* calculate number of pages */
     unsigned int num_pages = ROUND_UP(size, page_size) >> page_size_bits;
+    assert(num_pages > 0);
     assert(num_pages << page_size_bits >= size);
     seL4_CPtr frames[num_pages];
     seL4_Word cookies[num_pages];
@@ -227,10 +228,9 @@ static void *vm_map_paddr_with_page_size(vm_io_cookie_t *io_mapper, uintptr_t pa
         /* allocate a cslot */
         int error = vka_cspace_alloc(vka, &frames[i]);
         if (error) {
-            ZF_LOGE("cspace alloc failed");
-            assert(error == 0);
             /* we don't clean up as everything has gone to hell */
-            return NULL;
+            ZF_LOGF("cspace alloc failed (%d)", error);
+            UNREACHABLE();
         }
 
         /* create a path */
@@ -240,26 +240,30 @@ static void *vm_map_paddr_with_page_size(vm_io_cookie_t *io_mapper, uintptr_t pa
         error = vka_utspace_alloc_at(vka, &path, kobject_get_type(KOBJECT_FRAME, page_size_bits), page_size_bits,
                                      start + (i * page_size), &cookies[i]);
 
-        if (error) {
-            cookies[i] = -1;
-            error = simple_get_frame_cap(simple, (void *)start + (i * page_size), page_size_bits, &path);
-            if (error) {
-                /* free this slot, and then do general cleanup of the rest of the slots.
-                 * this avoids a needless seL4_CNode_Delete of this slot, as there is no
-                 * cap in it */
-                vka_cspace_free(vka, frames[i]);
-                num_pages = i;
-                goto error;
-            }
+        if (!error) {
+            break;
         }
 
-    }
+        cookies[i] = -1;
+        error = simple_get_frame_cap(simple, (void *)start + (i * page_size), page_size_bits, &path);
+        if (!error) {
+            break;
+        }
+
+        /* free this slot, and then do general cleanup of the rest of the slots.
+         * this avoids a needless seL4_CNode_Delete of this slot, as there is no
+         * cap in it */
+        vka_cspace_free(vka, frames[i]);
+        num_pages = i;
+        goto error;
+    } /* end loop over pages */
 
     /* Now map the frames in */
     void *vaddr = vspace_map_pages(vspace, frames, NULL, seL4_AllRights, num_pages, page_size_bits, cached);
     if (vaddr) {
         return vaddr + offset;
     }
+
 error:
     for (unsigned int i = 0; i < num_pages; i++) {
         cspacepath_t path;
@@ -453,7 +457,7 @@ static bool add_uts(const vm_config_t *vm_config, vka_t *vka, seL4_CPtr cap,
                   : ALLOCMAN_UT_DEV;
 
     allocman_t *allocman = vka->data;
-
+    assert(allocman);
     return allocman_utspace_add_uts(allocman, 1, &path, &size_bits, &paddr,
                                     ut_type);
 }
@@ -511,7 +515,11 @@ static int vmm_init(const vm_config_t *vm_config)
         bool is_device;
         seL4_CPtr cap = simple_get_nth_untyped(simple, i, &size_bits, &paddr, &is_device);
         err = add_uts(vm_config, vka, cap, paddr, size_bits, is_device);
-        assert(!err);
+        if (err) {
+            ZF_LOGE("Failed to add simple untyped #%d [paddr %p, size 2^%zs, isDev=%d] (%d)",
+                    i, (void *)paddr, size_bits, is_device, err);
+            return -1;
+        }
     }
 
     if (camkes_dtb_untyped_count) {
@@ -526,12 +534,17 @@ static int vmm_init(const vm_config_t *vm_config)
             seL4_CPtr cap = camkes_dtb_get_nth_untyped(i, &size_bits, &paddr);
             /* These UTs are considered device untypeds */
             err = add_uts(vm_config, vka, cap, paddr, size_bits, true);
-            assert(!err);
+            if (err) {
+                ZF_LOGE("Failed to add CAmkES DTB untyped #%d [paddr %p, size 2^%zs] (%d)",
+                        i, (void *)paddr, size_bits, err);
+                return -1;
+            }
         }
     }
     /* Initialize the vspace */
     err = sel4utils_bootstrap_vspace(vspace, &_alloc_data,
-                                     simple_get_init_cap(simple, seL4_CapInitThreadPD), vka, NULL, NULL, existing_frames);
+                                     simple_get_init_cap(simple, seL4_CapInitThreadPD),
+                                     vka, NULL, NULL, existing_frames);
     assert(!err);
 
     /* Initialise device support */
@@ -580,6 +593,55 @@ static int vmm_init(const vm_config_t *vm_config)
                                                  0, -1);
         assert(t_id >= 0);
     }
+
+    return 0;
+}
+
+static int vm_init_iommu(vm_t *vm)
+{
+
+#if defined(CONFIG_ARM_SMMU)
+
+    int err;
+    /* configure the smmu */
+    ZF_LOGD("Getting sid and cb caps");
+    seL4_CPtr cb_cap = camkes_get_smmu_cb_cap();
+    seL4_CPtr sid_cap = camkes_get_smmu_sid_cap();
+
+    ZF_LOGD("Assigning vspace to context bank");
+    err = seL4_ARM_CB_AssignVspace(cb_cap, vspace_get_root(&vm->mem.vm_vspace));
+    if (err) {
+        ZF_LOGE("Failed to assign vspace to CB (%d)");
+        return -1;
+    }
+
+    ZF_LOGD("Binding stream id to context bank");
+    err = seL4_ARM_SID_BindCB(sid_cap, cb_cap);
+    if (err) {
+        ZF_LOGE("Failed to bind CB to SID (%d)");
+        return -1;
+    }
+
+#elif defined(CONFIG_TK1_SMMU)
+
+    int err;
+    /* install any iospaces */
+    int iospace_caps;
+    err = simple_get_iospace_cap_count(&_simple, &iospace_caps);
+    if (err) {
+        ZF_LOGE("Failed to get iospace count (%d)");
+        return -1;
+    }
+    for (int i = 0; i < iospace_caps; i++) {
+        seL4_CPtr iospace = simple_get_nth_iospace_cap(&_simple, i);
+        err = vm_guest_add_iospace(&vm, &_vspace, iospace);
+        if (err) {
+            ZF_LOGE("Failed to add iospace (%d)");
+            return -1;
+        }
+    }
+
+#endif /* platform specific IOMMU init */
 
     return 0;
 }
@@ -639,6 +701,7 @@ static seL4_CPtr restart_tcb;
 
 static void restart_event(void *arg)
 {
+    ZF_LOGI("restart event");
     int ret UNUSED = restart_event_reg_callback(restart_event, NULL);
     seL4_UserContext context = {
         .pc = (seL4_Word)restart_component,
@@ -679,6 +742,36 @@ static void irq_handler(void *data, ps_irq_acknowledge_fn_t acknowledge_fn, void
     }
 }
 
+/* Default RAM initialization. Modules can overwrite this weak function with a
+ * custom initialization, e.g. to use memory shared with other components or
+ * mapped on demand.
+ */
+WEAK int vm_init_ram(vm_t *vm, const vm_config_t *vm_config)
+{
+    /* A VM without RAM is highly unusual and unlikely to work. But there might
+     * be special VM configurations where modules create specific RAM areas. In
+     * this case, this weak RAM init function here should be overwritten also,
+     * that's why we print the warning.
+     */
+    if (0 == vm_config->ram.size) {
+        ZF_LOGW("no standard RAM defined");
+        return 0;
+    }
+
+    ZF_LOGI("VM: %p - %p (RAM)",
+            (void *)vm_config->ram.base,
+            (void *)(vm_config->ram.base + vm_config->ram.size),
+            vm_config->files.kernel);
+
+    int err = vm_ram_register_at(vm, vm_config->ram.base, vm_config->ram.size,
+                                 vm->mem.map_one_to_one);
+    if (err) {
+        ZF_LOGE("RAM registration failed (%d)", err);
+        return -1;
+    }
+
+    return 0;
+}
 
 /* Force the _vmm_module  section to be created even if no modules are defined. */
 static USED SECTION("_vmm_module") struct {} dummy_module;
@@ -688,6 +781,13 @@ extern vmm_module_t __stop__vmm_module[];
 static int install_vm_devices(vm_t *vm, const vm_config_t *vm_config)
 {
     int err;
+
+    /* Initialize guest RAM. */
+    err = vm_init_ram(vm, vm_config);
+    if (err) {
+        ZF_LOGE("Failed to initialize RAM (%d)", err);
+        return -1;
+    }
 
     /* Install virtual devices */
     if (config_set(CONFIG_VM_PCI_SUPPORT)) {
@@ -701,7 +801,7 @@ static int install_vm_devices(vm_t *vm, const vm_config_t *vm_config)
     int max_vmm_modules = (int)(__stop__vmm_module - __start__vmm_module);
     int num_vmm_modules = 0;
     for (vmm_module_t *i = __start__vmm_module; i < __stop__vmm_module; i++) {
-        ZF_LOGE("module name: %s", i->name);
+        ZF_LOGI("module: %s", i->name);
         i->init_module(vm, i->cookie);
         num_vmm_modules++;
     }
@@ -723,11 +823,13 @@ static int route_irq(int irq_num, vm_vcpu_t *vcpu, irq_server_t *irq_server)
 
     irq_token_t token = calloc(1, sizeof(struct irq_token));
     if (token == NULL) {
+        ZF_LOGE("Failed allocate irq_token");
         return -1;
     }
 
     int err = vm_register_irq(vcpu, irq.irq.number, &do_irq_server_ack, token);
     if (err == -1) {
+        ZF_LOGE("Failed register IRQ %d", irq.irq.number);
         return -1;
     }
 
@@ -746,10 +848,14 @@ static int route_irq(int irq_num, vm_vcpu_t *vcpu, irq_server_t *irq_server)
 static int route_irqs(vm_vcpu_t *vcpu, irq_server_t *irq_server)
 {
     int err;
-    for (int i = 0; i < ARRAY_SIZE(linux_pt_irqs); i++) {
+
+    int num_irqs = ARRAY_SIZE(linux_pt_irqs);
+    for (int i = 0; i < num_irqs; i++) {
         int irq_num = linux_pt_irqs[i];
+        ZF_LOGI("Routing OS-IRQ[%d]=%d", i, irq_num);
         err = route_irq(irq_num, vcpu, irq_server);
         if (err) {
+            ZF_LOGE("Failed to route OS-IRQ[%d]=%d (%d)", i, irq_num, err);
             return err;
         }
     }
@@ -758,12 +864,51 @@ static int route_irqs(vm_vcpu_t *vcpu, irq_server_t *irq_server)
         int *dtb_irqs = camkes_dtb_get_irqs(&num_dtb_irqs);
         for (int i = 0; i < num_dtb_irqs; i++) {
             int irq_num = dtb_irqs[i];
+            ZF_LOGI("Routing DTB-IRQ[%d]=%d", i, irq_num);
             err = route_irq(irq_num, vcpu, irq_server);
             if (err) {
+                ZF_LOGE("Failed to route DTB-IRQ[%d]=%d (%d)", i, irq_num, err);
                 return err;
             }
         }
     }
+    return 0;
+}
+
+static int vm_create_vcpus(vm_t *vm, const vm_config_t *vm_config,
+                           irq_server_t *irq_server)
+{
+    int err;
+
+    ZF_LOGI("Creating %d vCPUs", NUM_VCPUS);
+
+    /* Create CPUs and DTB node */
+    for (int i = 0; i < NUM_VCPUS; i++) {
+        vm_vcpu_t *vcpu = create_vmm_plat_vcpu(vm, VM_PRIO - 1);
+        if (!vcpu) {
+            ZF_LOGE("Failed to create VCPU %d", i);
+            return -1;
+        }
+    }
+
+    vm_vcpu_t *vcpu_boot = vm->vcpus[BOOT_VCPU];
+    if (!vcpu_boot) {
+        ZF_LOGE("BOOT_VCPU (%d) is not set up", BOOT_VCPU);
+        return -1;
+    }
+
+    err = vm_assign_vcpu_target(vcpu_boot, 0);
+    if (err) {
+        ZF_LOGE("Failed to assign boot vcpu (%d)", err);
+        return -1;
+    }
+
+    err = route_irqs(vcpu_boot, irq_server);
+    if (err) {
+        ZF_LOGE("Failed route IRQs to boot vcpu (%d)", err);
+        return -1;
+    }
+
     return 0;
 }
 
@@ -785,6 +930,7 @@ static int vm_dtb_init(vm_t *vm, const vm_config_t *vm_config)
         if (dtb_fd < 0) {
             ZF_LOGE("opening DTB file failed (%d)", dtb_fd);
         } else {
+            ZF_LOGI("read dtb_base...");
             size_t dtb_len = read(dtb_fd, gen_dtb_base_buf, sizeof(gen_dtb_base_buf));
             close(dtb_fd);
             if (dtb_len <= 0) {
@@ -794,12 +940,17 @@ static int vm_dtb_init(vm_t *vm, const vm_config_t *vm_config)
                 fdt_ori = gen_dtb_base_buf;
             }
         }
+    } else {
+        ZF_LOGI("generating DTB for VM from scratch");
     }
 
     /* We are done if DTB generation is not enabled. */
     if (!vm_config->generate_dtb) {
+        ZF_LOGI("no DTB to generate");
         return 0;
     }
+
+    ZF_LOGE("init generate_dtb...");
 
     ZF_LOGW_IF(!fdt_ori, "No base DTB set");
 
@@ -809,45 +960,86 @@ static int vm_dtb_init(vm_t *vm, const vm_config_t *vm_config)
         return -1;
     }
 
+    int cnt;
+    char const **nodes;
+
     /* If VM has "plat_keep_devices" set, use it! Else, just use the default */
-    int num_keep_devices = 0;
-    char **keep_devices = NULL;
+    cnt = 0;
     if (camkes_dtb_get_plat_keep_devices) {
-        keep_devices = camkes_dtb_get_plat_keep_devices(&num_keep_devices);
+        nodes = (char const **)camkes_dtb_get_plat_keep_devices(&cnt);
+        ZF_LOGI_IF(cnt > 0, "Keeping DTB nodes: %d", cnt);
     }
-    if (num_keep_devices) {
-        fdtgen_keep_nodes(context, (const char **)keep_devices, num_keep_devices);
-    } else {
-        fdtgen_keep_nodes(context, plat_keep_devices, ARRAY_SIZE(plat_keep_devices));
+    if (0 == cnt) {
+        nodes = plat_keep_devices;
+        cnt = ARRAY_SIZE(plat_keep_devices);
+        ZF_LOGI_IF(cnt > 0, "Keeping DTB nodes (plat): %d", cnt);
+    }
+    if (cnt > 0) {
+        assert(nodes);
+        for (int i = 0; i < cnt; i++) {
+            ZF_LOGI("  %s", nodes[i]);
+        }
+        fdtgen_keep_nodes(context, nodes, cnt);
     }
 
     /* If VM has "plat_keep_devices and subtree" set, use it! Else, just use the default */
-    int num_keep_devices_and_subtree = 0;
-    char **keep_devices_and_subtree;
+    cnt = 0;
     if (camkes_dtb_get_plat_keep_devices_and_subtree) {
-        keep_devices_and_subtree = camkes_dtb_get_plat_keep_devices_and_subtree(&num_keep_devices_and_subtree);
-    }
-    if (num_keep_devices_and_subtree) {
-        for (int i = 0; i < num_keep_devices_and_subtree; i++) {
-            fdtgen_keep_node_subtree(context, fdt_ori, keep_devices_and_subtree[i]);
+        nodes = (char const **)camkes_dtb_get_plat_keep_devices_and_subtree(&cnt);
+        if (cnt > 0) {
+            ZF_LOGI("Keeping DTB subtrees: %d", cnt);
         }
-    } else {
-        for (int i = 0; i < ARRAY_SIZE(plat_keep_device_and_subtree); i++) {
-            fdtgen_keep_node_subtree(context, fdt_ori, plat_keep_device_and_subtree[i]);
+    }
+    if (0 == cnt) {
+        nodes = plat_keep_device_and_subtree;
+        cnt = ARRAY_SIZE(plat_keep_device_and_subtree);
+        if (cnt > 0) {
+            ZF_LOGI("Keeping DTB subtrees (plat): %d", cnt);
+        }
+    }
+    if (cnt > 0) {
+        assert(fdt_ori);
+        for (int i = 0; i < cnt; i++) {
+            ZF_LOGI("  %s", nodes[i]);
+            fdtgen_keep_node_subtree(context, fdt_ori, nodes[i]);
         }
     }
 
-    for (int i = 0; i < ARRAY_SIZE(plat_keep_device_and_subtree_and_disable); i++) {
-        fdtgen_keep_node_subtree_disable(context, fdt_ori, plat_keep_device_and_subtree_and_disable[i]);
+    /* Keep DTB subtrees and disable */
+    nodes = plat_keep_device_and_subtree_and_disable;
+    cnt = ARRAY_SIZE(plat_keep_device_and_subtree_and_disable);
+    if (cnt > 0) {
+        ZF_LOGI("Keeping disabled DTB subtrees: %d", cnt);
+        assert(fdt_ori);
+        for (int i = 0; i < cnt; i++) {
+            ZF_LOGI("  #%d: %s", i, nodes[i]);
+            fdtgen_keep_node_subtree_disable(context, fdt_ori, nodes[i]);
+        }
     }
-    fdtgen_keep_nodes_and_disable(context, plat_keep_device_and_disable, ARRAY_SIZE(plat_keep_device_and_disable));
 
-    int num_paths = 0;
-    char **paths = NULL;
+    /* Keep DTB nodes and disable */
+    nodes = plat_keep_device_and_disable;
+    cnt = ARRAY_SIZE(plat_keep_device_and_disable);
+    if (cnt > 0) {
+        ZF_LOGI("Keeping disabled DTB subtrees (plat): %d", cnt);
+        for (int i = 0; i < cnt; i++) {
+            ZF_LOGI("  %s", nodes[i]);
+        }
+        fdtgen_keep_nodes_and_disable(context, nodes, cnt);
+    }
+
+    /* Keep DTB nodes */
     if (camkes_dtb_get_node_paths) {
-        paths = camkes_dtb_get_node_paths(&num_paths);
+        cnt = 0;
+        const char **paths = (const char **)camkes_dtb_get_node_paths(&cnt);
+        if (cnt > 0) {
+            ZF_LOGI("keeping DTB paths: %d", cnt);
+            for (int i = 0; i < cnt; i++) {
+                ZF_LOGI("  %s", paths[i]);
+            }
+            fdtgen_keep_nodes(context, paths, cnt);
+        }
     }
-    fdtgen_keep_nodes(context, (const char **)paths, num_paths);
 
     /* build a DTB in gen_dtb_buf */
     err = fdtgen_generate(context, fdt_ori);
@@ -895,16 +1087,83 @@ static int vm_dtb_finalize(vm_t *vm, const vm_config_t *vm_config)
         }
     }
 
+    ZF_LOGI("fdt_pack...");
     fdt_pack(gen_dtb_buf);
     return 0;
 }
 
 static int load_generated_dtb(vm_t *vm, uintptr_t paddr, void *addr, size_t size, size_t offset, void *cookie)
 {
-    ZF_LOGD("paddr: 0x%lx, addr: 0x%lx, size: 0x%lx, offset: 0x%lx", paddr, (seL4_Word) addr, size, offset);
+    ZF_LOGV("paddr: 0x%lx, addr: 0x%lx, size: 0x%lx, offset: 0x%lx", paddr, (seL4_Word) addr, size, offset);
     memcpy(addr, cookie + offset, size);
     return 0;
 }
+
+/* call with print_dtb(fdt, 0, 0) */
+static void print_dtb(void *fdt, int node, int level)
+{
+    const char *indent_str = "  ";
+    if (node > 0) {
+        for (int i = 0; i < level; i++) { printf("%s", indent_str); }
+        printf("%s ", fdt_get_name(fdt, node, NULL));
+    }
+    printf("{\n");
+    int property;
+    fdt_for_each_property_offset(property, fdt, node) {
+        for (int i = 0; i < level+1; i++) { printf("%s", indent_str); }
+        const struct fdt_property *p = fdt_get_property_by_offset(fdt, property, NULL);
+        const char *prop_name = fdt_string(fdt, fdt32_to_cpu(p->nameoff));
+        if (!prop_name) {
+            printf("[NULL NAME]\n");
+            continue;
+        }
+        printf("%s", prop_name);
+        int len = 0;
+        const void *data = fdt_getprop(fdt, node, prop_name, &len);
+        if (len == 0) {
+            printf("\n");
+            continue;
+        }
+        printf(": ");
+        if (!data) {
+            printf("[NULL DATA, LEN %d]\n", len);
+            continue;
+        }
+        const uint8_t *buf = (const uint8_t *)data;
+        extern int util_is_printable_string(const void *data, int len);
+        int is_str = util_is_printable_string(data, len);
+        if (!is_str) {
+            printf("<");
+        }
+        else if (buf[len - 1] != '\0') {
+            printf("[UNTERMINATED STRING]\n");
+            continue;
+        }
+        int num_size = is_str ? 0 : ((len % 4) == 0) ? 4 : 1;
+        int j = 0;
+        while (j < len) {
+            const uint8_t *b = &buf[j];
+            if (is_str) {
+                if (j > 0) { printf(", "); }
+                const char *s = (const char *)b;
+                printf("'%s'", s);
+                j += strlen(s) + 1;
+            } else {
+                if (j > 0) { printf(" "); }
+                printf("0x%x", (num_size == 4) ? fdt32_to_cpu(*((const uint32_t *)b)) : *b);
+                j += num_size;
+            }
+        }
+        printf("%s\n", is_str?"":">");
+    }
+    int subnode;
+    fdt_for_each_subnode(subnode, fdt, node) {
+        print_dtb(fdt, subnode, level + 1);
+    }
+    for (int i = 0; i < level; i++) { printf("%s", indent_str); }
+    printf("}\n");
+}
+
 
 static int load_vm_images(vm_t *vm, const vm_config_t *vm_config)
 {
@@ -913,7 +1172,7 @@ static int load_vm_images(vm_t *vm, const vm_config_t *vm_config)
     int err;
 
     /* Load kernel */
-    printf("Loading Kernel: \'%s\'\n", vm_config->files.kernel);
+    ZF_LOGI("Loading Kernel: '%s'", vm_config->files.kernel);
     guest_kernel_image_t kernel_image_info;
     err = vm_load_guest_kernel(vm, vm_config->files.kernel, vm_config->ram.base,
                                0, &kernel_image_info);
@@ -921,6 +1180,11 @@ static int load_vm_images(vm_t *vm, const vm_config_t *vm_config)
     if (!entry || err) {
         return -1;
     }
+
+    ZF_LOGI("VM: %p - %p (kernel '%s')",
+            (void *)kernel_image_info.kernel_image.load_paddr,
+            (void *)(kernel_image_info.kernel_image.load_paddr + kernel_image_info.kernel_image.size),
+            vm_config->files.kernel);
 
     /* generate a chosen node */
     if (vm_config->generate_dtb) {
@@ -933,11 +1197,16 @@ static int load_vm_images(vm_t *vm, const vm_config_t *vm_config)
     }
 
     /* Attempt to load initrd if provided */
-    guest_image_t initrd_image;
+    guest_image_t initrd_image = {0};
     if (vm_config->provide_initrd) {
-        printf("Loading Initrd: \'%s\'\n", vm_config->files.initrd);
+        ZF_LOGI("Loading Initrd: '%s'", vm_config->files.initrd);
         err = vm_load_guest_module(vm, vm_config->files.initrd,
                                    vm_config->initrd_addr, 0, &initrd_image);
+        ZF_LOGI("VM: %p - %p (Initrd '%s')",
+                initrd_image.load_paddr,
+                (void *)(initrd_image.load_paddr + initrd_image.size),
+                vm_config->files.initrd);
+
         void *initrd = (void *)initrd_image.load_paddr;
         if (!initrd || err) {
             return -1;
@@ -956,18 +1225,23 @@ static int load_vm_images(vm_t *vm, const vm_config_t *vm_config)
     if (vm_config->generate_dtb) {
         ZF_LOGW_IF(vm_config->provide_dtb,
                    "provide_dtb and generate_dtb are both set. The provided dtb will NOT be loaded");
+        ZF_LOGI("vm_dtb_finalize...");
         err = vm_dtb_finalize(vm, vm_config);
         if (err) {
             ZF_LOGE("Couldn't generate DTB (%d)", err);
             return -1;
         }
-        printf("Loading Generated DTB\n");
+        ZF_LOGI("Loading Generated DTB");
+        ZF_LOGI("VM: %p - %p (generated DTB)",
+                (void *)vm_config->dtb_addr,
+                (void *)(vm_config->dtb_addr + sizeof(gen_dtb_buf)));
+        print_dtb(gen_dtb_buf, 0, 0);
         vm_ram_mark_allocated(vm, vm_config->dtb_addr, sizeof(gen_dtb_buf));
         vm_ram_touch(vm, vm_config->dtb_addr, sizeof(gen_dtb_buf), load_generated_dtb,
                      gen_dtb_buf);
         dtb = vm_config->dtb_addr;
     } else if (vm_config->provide_dtb) {
-        printf("Loading DTB: \'%s\'\n", vm_config->files.dtb);
+        ZF_LOGI("Loading DTB: '%s'", vm_config->files.dtb);
 
         /* Load device tree */
         guest_image_t dtb_image;
@@ -977,15 +1251,20 @@ static int load_vm_images(vm_t *vm, const vm_config_t *vm_config)
         if (!dtb || err) {
             return -1;
         }
+        ZF_LOGD("VM: %p - %p (DTB '%s')",
+                (void *)dtb_image.load_paddr,
+                (void *)(dtb_image.load_paddr + dtb_image.size),
+                vm_config->files.dtb);
     } else {
         ZF_LOGW("%s not given a DTB - This may be appropriate for your guest, but it " \
                 "may also break things!", get_instance_name());
     }
 
     /* Set boot arguments */
+    ZF_LOGI("Entering VM at %p", (void *)entry);
     err = vcpu_set_bootargs(vm->vcpus[BOOT_VCPU], entry, MACH_TYPE, dtb);
     if (err) {
-        printf("Error: Failed to set boot arguments\n");
+        ZF_LOGE("Error: Failed to set boot arguments (%d)", err);
         return -1;
     }
 
@@ -1043,7 +1322,7 @@ static int handle_async_event(vm_t *vm, seL4_Word badge, seL4_MessageInfo_t tag,
             }
         }
         if (!found_handler) {
-            ZF_LOGE("Unknown badge (%"SEL4_PRId_word")", badge);
+            ZF_LOGE("No handler for badge %"SEL4_PRId_word, badge);
         }
     }
     return 0;
@@ -1055,7 +1334,7 @@ static int alloc_vm_device_cap(uintptr_t addr, vm_t *vm, vm_frame_t *frame_resul
     cspacepath_t frame;
     err = vka_cspace_alloc_path(vm->vka, &frame);
     if (err) {
-        ZF_LOGE("Failed to allocate cslot");
+        ZF_LOGE("Failed to allocate cslot (%d)", err);
         return -1;
     }
     seL4_Word cookie;
@@ -1065,7 +1344,7 @@ static int alloc_vm_device_cap(uintptr_t addr, vm_t *vm, vm_frame_t *frame_resul
         ZF_LOGV("Grabbing the entire cap for device memory");
         err = simple_get_frame_cap(vm->simple, (void *)addr, seL4_PageBits, &frame);
         if (err) {
-            ZF_LOGV("Failed to grab the entire cap for addr 0x%"PRIxPTR, addr);
+            ZF_LOGV("Failed to grab the entire cap for addr %p", (void *)addr);
             return -1;
         }
     }
@@ -1083,7 +1362,7 @@ static int alloc_vm_ram_cap(uintptr_t addr, vm_t *vm, vm_frame_t *frame_result)
     vka_object_t frame_obj;
     err = vka_alloc_frame_maybe_device(vm->vka, seL4_PageBits, true, &frame_obj);
     if (err) {
-        ZF_LOGF("Failed vka_alloc_frame_maybe_device");
+        ZF_LOGF("Failed vka_alloc_frame_maybe_device (%d)", err);
         return -1;
     }
     vka_cspace_make_path(vm->vka, frame_obj.cptr, &frame);
@@ -1103,15 +1382,17 @@ static vm_frame_t on_demand_iterator(uintptr_t addr, void *cookie)
     /* Attempt allocating device memory */
     err = alloc_vm_device_cap(paddr, vm, &frame_result);
     if (!err) {
-        printf("OnDemandInstall: Created device-backed memory for addr 0x%"PRIxPTR"\n", addr);
+        ZF_LOGE("OnDemandInstall: Created device-backed memory for addr %p",
+                (void *)addr);
         return frame_result;
     }
     /* Attempt allocating ram memory */
     err = alloc_vm_ram_cap(paddr, vm, &frame_result);
     if (err) {
-        ZF_LOGE("Failed to create on demand memory for addr 0x%"PRIxPTR, addr);
+        ZF_LOGE("Failed to create on demand memory for addr %p (%d)",
+                (void *)addr, err);
     }
-    printf("OnDemandInstall: Created RAM-backed memory for addr 0x%"PRIxPTR"\n", addr);
+    ZF_LOGE("OnDemandInstall: Created RAM-backed memory for addr %p", (void *)addr);
     return frame_result;
 }
 
@@ -1119,7 +1400,7 @@ static memory_fault_result_t handle_on_demand_fault_callback(vm_t *vm, vm_vcpu_t
                                                              size_t fault_length,
                                                              void *cookie)
 {
-    ZF_LOGE("Fault for on demand memory region: 0x%"PRIxPTR, fault_addr);
+    ZF_LOGE("Fault for on demand memory region: %p", (void *)fault_addr);
     return FAULT_ERROR;
 }
 
@@ -1140,7 +1421,7 @@ memory_fault_result_t unhandled_mem_fault_callback(vm_t *vm, vm_vcpu_t *vcpu,
         if (!mapped) {
             return FAULT_RESTART;
         }
-        ZF_LOGW("Unhandled fault on address 0x%"PRIxPTR, addr);
+        ZF_LOGW("Unhandled fault on address %p", (void *)addr);
     }
 #endif
     return FAULT_ERROR;
@@ -1169,7 +1450,7 @@ static int main_continued(void)
     while (setjmp(restart_jmp_buf) != 0) {
         err = vmm_process_reboot_callbacks(&vm, &reboot_hooks_list);
         if (err) {
-            ZF_LOGF("vm_process_reboot_callbacks failed: %d", err);
+            ZF_LOGF("vm_process_reboot_callbacks failed (%d)", err);
         }
         reset_resources();
     }
@@ -1185,135 +1466,120 @@ static int main_continued(void)
     /* DTB initialization requires a running file server, as the DTB could be
      * based on a DTB file taken from there.
      */
+    ZF_LOGE("vm_dtb_init...");
     err = vm_dtb_init(&vm, &vm_config);
     if (err) {
         ZF_LOGE("Failed to init DTB (%d)", err);
         return -1;
     }
 
+    ZF_LOGE("vmm_pci_init...");
     err = vmm_pci_init(&pci);
     if (err) {
         ZF_LOGE("Failed to initialise vmm pci");
         return err;
     }
 
+    ZF_LOGE("vmm_io_port_init...");
     err = vmm_io_port_init(&io_ports, FREE_IOPORT_START);
     if (err) {
         ZF_LOGE("Failed to initialise VM ioports");
         return err;
     }
 
+    ZF_LOGI("VMM init");
     err = vmm_init(&vm_config);
-    assert(!err);
+    if (err) {
+        ZF_LOGE("VMM init failed (%d)", err);
+        return -1;
+    }
+
 
     /* Create the VM */
+    ZF_LOGD("initialize VM '%s'", get_instance_name());
     err = vm_init(&vm, &_vka, &_simple, _vspace, &_io_ops, _fault_endpoint, get_instance_name());
-    assert(!err);
+    if (err) {
+        ZF_LOGE("VM init failed (%d)", err);
+        return -1;
+    }
+    ZF_LOGD("VM%d ('%s')", vm.vm_id, vm.vm_name);
+
     err = vm_register_unhandled_mem_fault_callback(&vm, unhandled_mem_fault_callback, NULL);
-    assert(!err);
+    if (err) {
+        ZF_LOGE("vm_register_unhandled_mem_fault_callback failed (%d)", err);
+        return -1;
+    }
+
     err = vm_register_notification_callback(&vm, handle_async_event, NULL);
-    assert(!err);
+    if (err) {
+        ZF_LOGE("vm_register_notification_callback failed (%d)", err);
+        return -1;
+    }
+
 
     /* basic configuration flags */
+    ZF_LOGE("basic vm setup...");
     vm.entry = vm_config.entry_addr;
     vm.mem.clean_cache = vm_config.clean_cache;
     vm.mem.map_one_to_one = vm_config.map_one_to_one; /* Map memory 1:1 if configured to do so */
 
-#ifdef CONFIG_TK1_SMMU
-    /* install any iospaces */
-    int iospace_caps;
-    err = simple_get_iospace_cap_count(&_simple, &iospace_caps);
+    err = vm_init_iommu(&vm);
     if (err) {
-        ZF_LOGF("Failed to get iospace count");
+        ZF_LOGE("Failed to initialise IO-MMU (%d)", err);
+        return -1;
     }
-    for (int i = 0; i < iospace_caps; i++) {
-        seL4_CPtr iospace = simple_get_nth_iospace_cap(&_simple, i);
-        err = vm_guest_add_iospace(&vm, &_vspace, iospace);
-        if (err) {
-            ZF_LOGF("Failed to add iospace");
-        }
-    }
-#endif /* CONFIG_TK1_SMMU */
-#ifdef CONFIG_ARM_SMMU
-    /* configure the smmu */
-    ZF_LOGD("Getting sid and cb caps");
-    seL4_CPtr cb_cap = camkes_get_smmu_cb_cap();
-    seL4_CPtr sid_cap = camkes_get_smmu_sid_cap();
-
-    ZF_LOGD("Assigning vspace to context bank");
-    err = seL4_ARM_CB_AssignVspace(cb_cap, vspace_get_root(&vm.mem.vm_vspace));
-    ZF_LOGF_IF(err, "Failed to assign vspace to CB");
-
-    ZF_LOGD("Binding stream id to context bank");
-    err = seL4_ARM_SID_BindCB(sid_cap, cb_cap);
-    ZF_LOGF_IF(err, "Failed to bind CB to SID");
-#endif /* CONFIG_ARM_SMMU */
 
     err = vm_create_default_irq_controller(&vm);
-    assert(!err);
+    if (err) {
+        ZF_LOGE("Couldn't create default IRQ controller (%d)", err);
+        return -1;
+    }
 
 #ifdef CONFIG_ALLOW_SMC_CALLS
     err = vm_register_smc_handler_callback(&vm, vm_smc_handler);
     assert(!err);
 #endif
 
-    /* Create CPUs and DTB node */
-    for (int i = 0; i < NUM_VCPUS; i++) {
-        vm_vcpu_t *new_vcpu = create_vmm_plat_vcpu(&vm, VM_PRIO - 1);
-        assert(new_vcpu);
-    }
-    if (vm_config.generate_dtb) {
-        err = fdt_generate_plat_vcpu_node(&vm, gen_dtb_buf);
-        if (err) {
-            ZF_LOGE("Couldn't generate plat_vcpu_node (%d)", err);
-            return -1;
-        }
-    }
-
-    vm_vcpu_t *vm_vcpu = vm.vcpus[BOOT_VCPU];
-    err = vm_assign_vcpu_target(vm_vcpu, 0);
+    err = vm_create_vcpus(&vm, &vm_config, _irq_server);
     if (err) {
-        return -1;
-    }
-
-    /* Route IRQs */
-    err = route_irqs(vm_vcpu, _irq_server);
-    if (err) {
+        ZF_LOGE("Error: Failed to create VCPUs (%d)", err);
         return -1;
     }
 
     /* Install devices */
+    ZF_LOGE("install_vm_devices...");
     err = install_vm_devices(&vm, &vm_config);
     if (err) {
         ZF_LOGE("Error: Failed to install VM devices");
-        seL4_DebugHalt();
         return -1;
     }
 
     /* Load system images */
+    ZF_LOGE("load_vm_images...");
     err = load_vm_images(&vm, &vm_config);
     if (err) {
         ZF_LOGE("Failed to load VM image");
-        seL4_DebugHalt();
         return -1;
     }
 
-    err = vcpu_start(vm_vcpu);
+    ZF_LOGI("vcpu_start...");
+    err = vcpu_start(vm.vcpus[BOOT_VCPU]);
     if (err) {
-        ZF_LOGE("Failed to start Boot VCPU");
+        ZF_LOGE("Failed to start Boot VCPU (%d)", err);
         return -1;
     }
 
-    while (1) {
+    ZF_LOGI("run VM%d ('%s')", vm.vm_id, vm.vm_name);
+
+    for(;;) {
         err = vm_run(&vm);
         if (err) {
             ZF_LOGE("Failed to run VM");
-            seL4_DebugHalt();
             return -1;
         }
     }
 
-    return 0;
+    UNREACHABLE();
 }
 
 /* base_prio and num_vcpus are optional attributes of the VM component. */
@@ -1339,5 +1605,9 @@ int run(void)
         }
     }
 
-    return main_continued();
+    int err = main_continued();
+    if (err) {
+        ZF_LOGE("VMM failure (%d)", err);
+        return -1;
+    }
 }
